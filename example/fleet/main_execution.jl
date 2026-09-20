@@ -38,6 +38,7 @@ test; override for a full ~1000-aircraft production run):
     FLEET_PAYLOAD_FRACTION default: 0.8
 """
 
+ENV["GKS_WSTYPE"] = "png"
 using TASOPT
 include(TASOPT.__TASOPTindices__)
 
@@ -52,6 +53,7 @@ inputs_dir  = get(ENV, "FLEET_INPUTS_DIR",  joinpath(__fleet_dir__, "inputs"))
 outputs_dir = get(ENV, "FLEET_OUTPUTS_DIR", joinpath(__fleet_dir__, "outputs"))
 aircraft_outdir  = joinpath(outputs_dir, "aircraft")
 fuel_burn_outdir = joinpath(outputs_dir, "fuel_burn")
+payload_outdir   = joinpath(outputs_dir, "payload_range")
 index_csv_path   = joinpath(outputs_dir, "index.csv")
 
 opt_maxeval  = parse(Int, get(ENV, "FLEET_OPT_MAXEVAL", "150"))
@@ -62,6 +64,7 @@ payload_fraction = parse(Float64, get(ENV, "FLEET_PAYLOAD_FRACTION", "0.8"))
 mkpath(outputs_dir)
 mkpath(aircraft_outdir)
 mkpath(fuel_burn_outdir)
+mkpath(payload_outdir)
 
 # ---------------------------------------------------------------------
 # Discover fleet
@@ -81,6 +84,8 @@ println("="^70)
 
 n_ok = 0
 n_failed = 0
+# Start wall-clock timer for cumulative batch elapsed time
+t_start = time()
 t_batch = @elapsed for (i, input_path) in enumerate(input_files)
 
     name = splitext(basename(input_path))[1]
@@ -116,6 +121,7 @@ t_batch = @elapsed for (i, input_path) in enumerate(input_files)
             design_range_km   = env.design_range_km,
             pfei_design       = pfei_design)
 
+
         architecture = string(ac.options.opt_prop_sys_arch)
         fuel_type    = string(ac.options.opt_fuel)
 
@@ -141,6 +147,29 @@ t_batch = @elapsed for (i, input_path) in enumerate(input_files)
                  " kJ/kg-km  envelope=", n_env_ok, "/", n_env_pts, " pts converged")
         global n_ok += 1
 
+        # ---- 4.5) Payload-range plot/file (fig variable not used; only file)
+        # Create the payload-range plot as the last step for each aircraft.
+        # Controlled by env var FLEET_CREATE_PAYLOAD_PLOT (defaults to "true").
+        create_payload_plot = lowercase(get(ENV, "FLEET_CREATE_PAYLOAD_PLOT", "true")) in ("1","true","yes")
+        if create_payload_plot
+            payload_outfile = joinpath(payload_outdir, string(name, ".png"))
+            try
+                println("  -> Starting to make payload range diagram for ", basename(input_path))
+                # Suppress any printing coming from the plotting call.
+                open("/dev/null", "w") do devnull
+                    redirect_stdout(devnull) do
+                        redirect_stderr(devnull) do
+                            fig = TASOPT.PayloadRange(ac; filename=payload_outfile, Ldebug=false)
+                        end
+                    end
+                end
+                println("  -> Finished making payload range diagram for ", basename(input_path))
+            catch e
+                # Don't let a plotting failure kill the batch; warn and continue.
+                println("  -> WARNING: failed to create payload range file: ", sprint(showerror, e))
+            end
+        end
+
     catch e
         # Never let one aircraft's failure kill the batch.
         msg = sprint(showerror, e)
@@ -158,7 +187,8 @@ t_batch = @elapsed for (i, input_path) in enumerate(input_files)
         global n_failed += 1
     end
 
-    println("  (", round(t_ac, digits=1), " s)")
+    total_elapsed = time() - t_start
+    println("  (", round(t_ac, digits=1), " s)  total elapsed= ", round(total_elapsed, digits=1), " s")
 end
 
 println("\n" * "="^70)

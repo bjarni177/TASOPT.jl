@@ -21,3 +21,4 @@ docs/build/*
 .vscode/*
 .CondaPkg/*
 __pycache__/*
+example/fleet/outputs/
