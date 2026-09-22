@@ -1,59 +1,43 @@
 """
-main_execution.jl
+main_execution.jl - Fleet batch-optimization driver
 
-Fleet batch-optimization driver.
-
-For every `*.toml` aircraft input file in `example/fleet/inputs/`:
-  1. Load the aircraft (`read_aircraft_model`).
-  2. Run a design optimization to convergence (`optimize_aircraft!`, in
-     `lib/fleet_optimize.jl`) — this both optimizes and sizes the aircraft.
-  3. Evaluate its fuel-burn performance envelope from 100 km to its design
-     range in 100 km increments, at 80% of max payload capacity
-     (`evaluate_fuel_burn_envelope`, in `lib/fleet_optimize.jl`).
-  4. Save the optimized aircraft (TOML) and the fuel-burn envelope (JLD2)
-     to SEPARATE output locations (`lib/fleet_io.jl`), and append one row
-     to a tidy CSV index that maps input .toml -> output .toml/.jld2 paths
-     and key summary metrics. That index is the fast "aircraft -> envelope"
-     lookup table for later use (including from MATLAB via readtable() on
-     the CSV + h5read()/h5info() on each aircraft's .jld2, which is plain
-     HDF5 under the hood — see SPEC.md).
-
-Designed to run unattended over O(1000) aircraft: every aircraft is
-processed inside a `try/catch` so one failure (non-convergence, bad input
-file, etc.) cannot halt the batch. Progress and failures are logged to
-stdout as the loop proceeds; a final summary is printed at the end.
+For every *.toml aircraft input file in example/fleet/inputs/:
+  1. Load the aircraft (read_aircraft_model)
+  2. Run a design optimization to convergence with stickfig output
+  3. Evaluate its fuel-burn performance envelope  
+  4. Save the optimized aircraft (TOML), parameters (JLD2), figure (PNG), 
+     fuel-burn envelope (JLD2) and append summary row to CSV index
 
 Usage:
     julia --project=. example/fleet/main_execution.jl
-    # or, from within the example/fleet/ directory:
-    julia --project=../.. main_execution.jl
 
-Optional environment variables (all have sensible defaults for a smoke
-test; override for a full ~1000-aircraft production run):
-    FLEET_INPUTS_DIR     default: <this dir>/inputs
-    FLEET_OUTPUTS_DIR    default: <this dir>/outputs
-    FLEET_OPT_MAXEVAL    default: 150   (NLopt function-eval budget per aircraft)
+Environment variables (all have sensible defaults):
+    FLEET_INPUTS_DIR     default: this_dir/inputs
+    FLEET_OUTPUTS_DIR    default: this_dir/outputs
+    FLEET_OPT_MAXEVAL    default: 150
     FLEET_OPT_FTOL_REL   default: 1e-5
     FLEET_ENVELOPE_STEP_KM default: 100.0
     FLEET_PAYLOAD_FRACTION default: 0.8
 """
 
+# Suppress GKS interim file creation during plotting
 ENV["GKS_WSTYPE"] = "png"
-using TASOPT
+ENV["GR_OUTPUT_FILE"] = "/dev/null"  # Suppress GR interim output files
+using TASOPT, Plots, GR
 include(TASOPT.__TASOPTindices__)
 
 const __fleet_dir__ = @__DIR__
 include(joinpath(__fleet_dir__, "lib", "fleet_io.jl"))
 include(joinpath(__fleet_dir__, "lib", "fleet_optimize.jl"))
 
-# ---------------------------------------------------------------------
-# Configuration (env-overridable; see docstring above)
-# ---------------------------------------------------------------------
+# Configuration
 inputs_dir  = get(ENV, "FLEET_INPUTS_DIR",  joinpath(__fleet_dir__, "inputs"))
 outputs_dir = get(ENV, "FLEET_OUTPUTS_DIR", joinpath(__fleet_dir__, "outputs"))
-aircraft_outdir  = joinpath(outputs_dir, "aircraft")
+aircraft_models_outdir = joinpath(outputs_dir, "aircraft_models")
+aircraft_params_outdir = joinpath(outputs_dir, "aircraft_params")
 fuel_burn_outdir = joinpath(outputs_dir, "fuel_burn")
 payload_outdir   = joinpath(outputs_dir, "payload_range")
+aircraft_fig_outdir = joinpath(outputs_dir, "aircraft_figures")
 index_csv_path   = joinpath(outputs_dir, "index.csv")
 
 opt_maxeval  = parse(Int, get(ENV, "FLEET_OPT_MAXEVAL", "150"))
@@ -62,29 +46,29 @@ envelope_step_km = parse(Float64, get(ENV, "FLEET_ENVELOPE_STEP_KM", "100.0"))
 payload_fraction = parse(Float64, get(ENV, "FLEET_PAYLOAD_FRACTION", "0.8"))
 
 mkpath(outputs_dir)
-mkpath(aircraft_outdir)
+mkpath(aircraft_models_outdir)
+mkpath(aircraft_params_outdir)
 mkpath(fuel_burn_outdir)
 mkpath(payload_outdir)
+mkpath(aircraft_fig_outdir)
 
-# ---------------------------------------------------------------------
-# Discover fleet
-# ---------------------------------------------------------------------
+# Preload GR backend
+gr()
+
+# Discover and process fleet
 input_files = discover_input_files(inputs_dir)
 n_total = length(input_files)
 println("="^70)
 println("TASOPT fleet batch run")
 println("  inputs_dir       = ", inputs_dir)
-println("  outputs_dir       = ", outputs_dir)
+println("  outputs_dir      = ", outputs_dir)
 println("  n aircraft found = ", n_total)
 println("  opt_maxeval      = ", opt_maxeval)
 println("  opt_ftol_rel     = ", opt_ftol_rel)
-println("  envelope_step_km = ", envelope_step_km)
-println("  payload_fraction = ", payload_fraction)
 println("="^70)
 
 n_ok = 0
 n_failed = 0
-# Start wall-clock timer for cumulative batch elapsed time
 t_start = time()
 t_batch = @elapsed for (i, input_path) in enumerate(input_files)
 
@@ -92,10 +76,8 @@ t_batch = @elapsed for (i, input_path) in enumerate(input_files)
     println("\n[$i/$n_total] ", name, "  (", input_path, ")")
 
     t_ac = @elapsed try
-        # ---- 1) Load -----------------------------------------------------
         ac = read_aircraft_model(input_path)
 
-        # ---- 2) Optimize + size -------------------------------------------
         ret_code, pfei_design = optimize_aircraft!(ac; maxeval=opt_maxeval,
                                                     ftol_rel=opt_ftol_rel)
 
@@ -104,14 +86,37 @@ t_batch = @elapsed for (i, input_path) in enumerate(input_files)
                   "finite-PFEI state (return code = $ret_code)")
         end
 
-        # ---- 3) Fuel-burn performance envelope -----------------------------
         env = evaluate_fuel_burn_envelope(ac; payload_fraction=payload_fraction,
                                            step_km=envelope_step_km)
         n_env_pts = length(env.range_km)
         n_env_ok  = count(env.converged)
 
-        # ---- 4) Save aircraft + envelope + index row -----------------------
-        out_toml_path = save_fleet_aircraft(ac, name, aircraft_outdir)
+        out_toml_path = save_fleet_aircraft(ac, name, aircraft_models_outdir)
+        
+        out_jld2_params_path = joinpath(aircraft_params_outdir, string(name, "_params.jld2"))
+        try
+            TASOPT.quicksave_aircraft(ac, out_jld2_params_path)
+            println("  -> Saved aircraft parameters to ", basename(out_jld2_params_path))
+        catch e
+            println("  -> WARNING: failed to quicksave: ", sprint(showerror, e))
+        end
+        
+        aircraft_fig_path = joinpath(aircraft_fig_outdir, string(name, "_aircraft.pdf"))
+        try
+            println("  -> Creating aircraft stick figure...")
+#            open("/dev/null", "w") do devnull
+#                redirect_stdout(devnull) do
+#                    redirect_stderr(devnull) do
+                        fig = TASOPT.stickfig(ac)
+                        Plots.savefig(fig, aircraft_fig_path)
+#                    end
+#                end
+#            end
+            println("  -> Saved aircraft figure to ", basename(aircraft_fig_path))
+        catch e
+            println("  -> WARNING: failed to create aircraft figure: ", sprint(showerror, e))
+        end
+
         out_jld2_path = save_fleet_envelope(name, fuel_burn_outdir;
             range_km          = env.range_km,
             fuel_burn_MJ      = env.fuel_burn_MJ,
@@ -120,7 +125,6 @@ t_batch = @elapsed for (i, input_path) in enumerate(input_files)
             payload_fraction  = payload_fraction,
             design_range_km   = env.design_range_km,
             pfei_design       = pfei_design)
-
 
         architecture = string(ac.options.opt_prop_sys_arch)
         fuel_type    = string(ac.options.opt_fuel)
@@ -144,18 +148,14 @@ t_batch = @elapsed for (i, input_path) in enumerate(input_files)
         ))
 
         println("  -> OK  PFEI=", round(pfei_design, digits=4),
-                 " kJ/kg-km  envelope=", n_env_ok, "/", n_env_pts, " pts converged")
+                 " kJ/kg-km  envelope=", n_env_ok, "/", n_env_pts, " converged")
         global n_ok += 1
 
-        # ---- 4.5) Payload-range plot/file (fig variable not used; only file)
-        # Create the payload-range plot as the last step for each aircraft.
-        # Controlled by env var FLEET_CREATE_PAYLOAD_PLOT (defaults to "true").
         create_payload_plot = lowercase(get(ENV, "FLEET_CREATE_PAYLOAD_PLOT", "true")) in ("1","true","yes")
         if create_payload_plot
-            payload_outfile = joinpath(payload_outdir, string(name, ".png"))
+            payload_outfile = joinpath(payload_outdir, string(name, ".pdf"))
             try
-                println("  -> Starting to make payload range diagram for ", basename(input_path))
-                # Suppress any printing coming from the plotting call.
+                println("  -> Creating payload-range diagram...")
                 open("/dev/null", "w") do devnull
                     redirect_stdout(devnull) do
                         redirect_stderr(devnull) do
@@ -163,15 +163,13 @@ t_batch = @elapsed for (i, input_path) in enumerate(input_files)
                         end
                     end
                 end
-                println("  -> Finished making payload range diagram for ", basename(input_path))
+                println("  -> Saved payload diagram to ", basename(payload_outfile))
             catch e
-                # Don't let a plotting failure kill the batch; warn and continue.
-                println("  -> WARNING: failed to create payload range file: ", sprint(showerror, e))
+                println("  -> WARNING: failed to create payload diagram: ", sprint(showerror, e))
             end
         end
 
     catch e
-        # Never let one aircraft's failure kill the batch.
         msg = sprint(showerror, e)
         println("  -> FAILED: ", msg)
         try
@@ -182,7 +180,7 @@ t_batch = @elapsed for (i, input_path) in enumerate(input_files)
                 "error_message" => msg,
             ))
         catch e2
-            println("  -> also failed to log this failure to the index: ", e2)
+            println("  -> also failed to log this failure: ", e2)
         end
         global n_failed += 1
     end
@@ -195,7 +193,22 @@ println("\n" * "="^70)
 println("Fleet batch run complete in ", round(t_batch/60, digits=2), " min")
 println("  succeeded: ", n_ok, " / ", n_total)
 println("  failed:    ", n_failed, " / ", n_total)
-println("  aircraft outputs -> ", aircraft_outdir)
+println("  aircraft models  -> ", aircraft_models_outdir)
+println("  aircraft params  -> ", aircraft_params_outdir)
+println("  aircraft figures -> ", aircraft_fig_outdir)
 println("  fuel-burn outputs -> ", fuel_burn_outdir)
 println("  index            -> ", index_csv_path)
 println("="^70)
+
+# Clean up any interim GKS plot files (gks-*.png) that Plots.jl may have created
+# (Commented out to preserve interim files for inspection)
+# try
+#     for gks_file in readdir(".")
+#         if startswith(gks_file, "gks-") && endswith(gks_file, ".png")
+#             rm(gks_file)
+#         end
+#     end
+#     println("\nCleaned up interim GKS plot files.")
+# catch e
+#     println("\nNote: Could not clean up interim GKS files: ", sprint(showerror, e))
+# end
