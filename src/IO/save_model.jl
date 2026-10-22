@@ -382,20 +382,28 @@ function save_aircraft_model(ac::TASOPT.aircraft=TASOPT.read_aircraft_model(),
         d_struct["sigma_caps"] = wing.inboard.caps.σ
         d_struct["tau_webs"] = wing.inboard.webs.σ
 
-        d_struct["sigma_struts"] = wing.strut.material.σmax
+        #d_struct["sigma_struts"] = wing.strut.material.σmax
         
         d_struct["fuse_shell_modulus_ratio"] = fuselage.ratio_young_mod_fuse_bending
         
         d_struct["E_wing_spar_cap"] = wing.inboard.caps.material.E
-        d_struct["E_struts"] = wing.strut.material.E
+        #d_struct["E_struts"] = wing.strut.material.E
         
         # Structural material densities
         d_struct["skin_density"] = fuselage.skin.ρ
         d_struct["fuse_stringer_density"] = fuselage.bendingmaterial_h.ρ
         d_struct["wing_tail_cap_density"] = wing.inboard.caps.ρ
         d_struct["wing_tail_web_density"] = wing.inboard.webs.ρ
-        d_struct["strut_density"] = wing.strut.material.ρ
-    d_out["Structures"] = d_struct
+        #d_struct["strut_density"] = wing.strut.material.ρ
+
+        # `sigma_struts`, `E_struts` and `strut_density` above are stale and ignored on read.
+        # The strut material is read from the keys below. `StructuralAlloy` only keeps
+        # σmax = YTS/(max_avg_stress*safety_factor), so max_avg_stress is saved as 1.0 and
+        # the safety factor carries the ratio YTS/σmax, which reproduces σmax exactly.
+        d_struct["strut_material"] = wing.strut.material.name
+        d_struct["strut_max_avg_stress"] = 1.0
+        d_struct["strut_safety_factor"] = wing.strut.material.YTS / wing.strut.material.σmax
+        d_out["Structures"] = d_struct
     #--end Structures----------------
 
     #Propulsion ------------------------
