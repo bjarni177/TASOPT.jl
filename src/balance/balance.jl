@@ -652,7 +652,7 @@ function size_htail(ac, paraF, paraB, paraC; Ldebug::Bool = false)
 
       end #end for loop iter
       if (dmax > toler)
-            @warn "`size_htail()`: Pitch not converged. dxwbox,dSh = $dxw, $dSh"
+            @warn "`size_htail()`: Pitch not converged. xwbox, Sh, dmax = $xwbox, $Sh, $dmax"
       end
 
 
