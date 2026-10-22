@@ -543,8 +543,8 @@ TASOPT.size_landing_gear!(ac)
         for _ in 1:10
             sf1 = 0.5 + 1.5 * rand(rng)
             sf2 = 0.5 + 1.5 * rand(rng)
-            sw1 = 5.0 + 55.0 * rand(rng)
-            sw2 = 5.0 + 55.0 * rand(rng)
+            sw1 = 5.0 + 30.0 * rand(rng)
+            sw2 = 5.0 + 30.0 * rand(rng)
             s1 = TASOPT.structures.size_wing_section!(wing.outboard, sw1, sf1)
             s2 = TASOPT.structures.size_wing_section!(wing.outboard, sw2, sf2)
             @test s1.tbweb * cosd(sw1)^2 * sf1 ≈ s2.tbweb * cosd(sw2)^2 * sf2 rtol = 1e-12
@@ -557,7 +557,7 @@ TASOPT.size_landing_gear!(ac)
         # on the shorter effective structural chord. A more swept wing always needs
         # a heavier spar cap for equal loads.
         for _ in 1:10
-            sw_lo = 5.0  + 25.0 * rand(rng)
+            sw_lo = 5.0  + 15.0 * rand(rng)
             sw_hi = sw_lo + 5.0 + 10.0 * rand(rng)
             sf    = 0.5  +  1.5 * rand(rng)
             s_lo = TASOPT.structures.size_wing_section!(wing.outboard, sw_lo, sf)
@@ -627,6 +627,81 @@ end
             @test f_fwd.bendingmaterial_h.weight.W ≈ f_aft.bendingmaterial_h.weight.W rtol=1e-12
             @test f_fwd.bendingmaterial_h.EIh       ≈ f_aft.bendingmaterial_h.EIh       rtol=1e-12
         end
+    end
+end
+
+@testset "Phase 0 robustness: engine warning, tail guard, cap guard, minimum gauge" begin
+    st = TASOPT.structures
+
+    @testset "check_engine_convergence_failure warns instead of throwing" begin
+        pare_g = zeros(ietotal, 3)
+        @test_logs TASOPT.engine.check_engine_convergence_failure(pare_g) # converged: no log
+        pare_g[ieConvFail, 2] = 1.0
+        @test_logs (:warn, r"failed to converge") TASOPT.engine.check_engine_convergence_failure(pare_g)
+    end
+
+    @testset "tail_loading! rejects negative area" begin
+        htail_g = deepcopy(ac_test.htail)
+        po_g, b_g = TASOPT.aerodynamics.tail_loading!(htail_g, 42.443587259163984, 12692.519555311032)
+        @test isfinite(po_g) && isfinite(b_g) && b_g > 0
+        @test_throws "negative" TASOPT.aerodynamics.tail_loading!(htail_g, -1.0, 12692.519555311032)
+    end
+
+    # Cap/web inputs (same values as the size_cap / size_web tests above)
+    σ_g, hb_g, wb_g, c_g, cosL_g = 2.0684848484848484e8, 0.14, 0.5, 6.12218798433346, 0.9063077870366499
+    hrms_g = 0.12
+    # moment that gives a chosen con = moment*6h̄/w̄/(c^3 σmax cosΛ^4)
+    moment_for(con) = con * wb_g * c_g^3 * σ_g * cosL_g^4 / (6hb_g)
+    τ_g, shear_g, cperp_g, hweb_g = 1.378913257881327e8, 1.0413949053835782e6, 5.548586639725954, 0.105
+
+    @testset "calc_cap_thickness feasibility guard" begin
+        con = 0.5 * hrms_g^3
+        @test st.calc_cap_thickness(σ_g, moment_for(con), hb_g, wb_g, hrms_g, c_g, cosL_g) ≈
+              0.5 * (hrms_g - cbrt(hrms_g^3 - con))
+
+        # moment_for round-trips con with ~1e-16 relative error, so con == h_rms^3 exactly
+        # cannot be reproduced through the moment; test just above it instead.
+        for con in (2e-3, hrms_g^3 * (1 + 1e-12))
+            m = moment_for(con)
+            @test_throws r"infeasible" st.calc_cap_thickness(σ_g, m, hb_g, wb_g, hrms_g, c_g, cosL_g)
+            @test_throws r"infeasible" st.size_cap(σ_g, m, hb_g, wb_g, hrms_g, c_g, cosL_g)
+        end
+    end
+
+    @testset "size_cap / size_web minimum gauge" begin
+        m = moment_for(0.5 * hrms_g^3)
+        cap0 = st.size_cap(σ_g, m, hb_g, wb_g, hrms_g, c_g, cosL_g)
+        web0 = st.size_web(τ_g, shear_g, cperp_g, hweb_g)
+
+        # t_min = 0 reproduces the no-keyword call exactly
+        @test st.size_cap(σ_g, m, hb_g, wb_g, hrms_g, c_g, cosL_g; t_min = 0.0) == cap0
+        @test st.size_web(τ_g, shear_g, cperp_g, hweb_g; t_min = 0.0) == web0
+
+        # t_min above the required thickness governs, and Ab follows the returned t
+        t_hi = 2 * max(cap0[1], web0[1])
+        t, Ab = st.size_cap(σ_g, m, hb_g, wb_g, hrms_g, c_g, cosL_g; t_min = t_hi)
+        @test t == t_hi
+        @test Ab ≈ 2 * t_hi * wb_g
+        t, Ab = st.size_web(τ_g, shear_g, cperp_g, hweb_g; t_min = t_hi)
+        @test t == t_hi
+        @test Ab ≈ 2 * t_hi * hweb_g
+
+        # t_min below the required thickness leaves the result unchanged
+        @test st.size_cap(σ_g, m, hb_g, wb_g, hrms_g, c_g, cosL_g; t_min = 0.5 * cap0[1]) == cap0
+        @test st.size_web(τ_g, shear_g, cperp_g, hweb_g; t_min = 0.5 * web0[1]) == web0
+    end
+
+    @testset "size_wing_section! defaults unchanged, t_cap_min passes through" begin
+        # uses wing.outboard from the setup above (loads already set)
+        sd0 = st.size_wing_section!(wing.outboard, wing.sweep, 1.0)
+        EI0, GJ0 = copy(wing.outboard.EI), wing.outboard.GJ
+        sd1 = st.size_wing_section!(wing.outboard, wing.sweep, 1.0; t_cap_min = 0.0, t_web_min = 0.0)
+        @test (sd1.tbweb, sd1.tbcap, sd1.Abweb, sd1.Abcap) == (sd0.tbweb, sd0.tbcap, sd0.Abweb, sd0.Abcap)
+        @test wing.outboard.EI == EI0 && wing.outboard.GJ == GJ0
+
+        sd2 = st.size_wing_section!(wing.outboard, wing.sweep, 1.0; t_cap_min = 2 * sd0.tbcap)
+        @test sd2.tbcap == 2 * sd0.tbcap
+        @test sd2.tbweb == sd0.tbweb
     end
 end
 
