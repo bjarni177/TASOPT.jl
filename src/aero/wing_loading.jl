@@ -151,7 +151,7 @@ never-exceed dynamic pressure, maximum CL, sweep, and aspect ratio. Formerly, `t
 See [Geometry](@ref geometry) or Section 2.3.2 and 2.9.6 of the [TASOPT Technical Description](@ref dreladocs).
 """
 function tail_loading!(tail, S, qne; t_fac = 1.0)
-
+    S < 0 && throw(ArgumentError("tail_loading!: negative tail area S = $S; the sizing iterate has left the feasible region"))
     b  = sqrt(S*tail.layout.AR*t_fac)
     tail.layout.root_chord = S/(0.5*b*(1.0+tail.outboard.λ))
     po = qne*S*tail.CL_max/b * 2.0/(1.0 + tail.outboard.λ)
