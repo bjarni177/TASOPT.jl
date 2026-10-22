@@ -27,10 +27,12 @@ Calculates Loads and thicknesses for wing sections
     - `section::TASOPT.structures.Wing.WingSection`: Wing Section to be sized.
     - `sweep::Float64`: Wing sweep.
     - `sigfac::Float64`: Stress factor
+    - `t_cap_min::Float64`: (keyword, default 0.0) Minimum cap thickness
+    - `t_web_min::Float64`: (keyword, default 0.0) Minimum web thickness
 
     **Outputs:** [`WingSectionDimensions`](@ref)
 """
-function size_wing_section!(section, sweep, sigfac)
+function size_wing_section!(section, sweep, sigfac; t_cap_min = 0.0, t_web_min = 0.0)
     shear_load = section.max_shear_load
     moment = section.moment
 
@@ -51,10 +53,10 @@ function size_wing_section!(section, sweep, sigfac)
 
     web_height = cross_section.web_to_box_height * cross_section.thickness_to_chord
 
-    tbweb, Abweb = size_web(tauweb, shear_load, cp, web_height)
+    tbweb, Abweb = size_web(tauweb, shear_load, cp, web_height; t_min = t_web_min)
     
     tbcap, Abcap = size_cap(sigcap, moment, cross_section.thickness_to_chord,
-        cross_section.width_to_chord, h_rms, cs, cosL)
+        cross_section.width_to_chord, h_rms, cs, cosL; t_min = t_cap_min)
 
     # EI_xx
     section.EI[1] = Ecap * cp^4 * (h_rms^3 - (h_rms - 2.0 * tbcap)^3) * cross_section.width_to_chord / 12.0 +
@@ -265,7 +267,7 @@ end # wing_weights
 
 
 """
-    size_cap(σmax, moment, h̄, w̄, h_rms, c, cosΛ)
+    size_cap(σmax, moment, h̄, w̄, h_rms, c, cosΛ; t_min = 0.0)
 
 Calculates area and thickness of wing caps based on maximum stress and geometric parameters.
 
@@ -278,19 +280,20 @@ Calculates area and thickness of wing caps based on maximum stress and geometric
     - `h_rms::Float64`: RMS height of sparbox
     - `c::Float64`: Chord length
     - `cosΛ::Float64`: Cosine of sweep angle
+    - `t_min::Float64`: (keyword, default 0.0) Minimum cap thickness; `t_cap = max(required, t_min)`
     
     **Outputs:**
     - `t_cap::Float64`: Thickness of cap
     - `Ab_cap::Float64`: Cross-sectional area of cap
 """
-function size_cap(σmax, moment, h̄, w̄, h_rms, c, cosΛ)
-    t_cap = calc_cap_thickness(σmax, moment, h̄, w̄, h_rms, c, cosΛ)
+function size_cap(σmax, moment, h̄, w̄, h_rms, c, cosΛ; t_min = 0.0)
+    t_cap = max(calc_cap_thickness(σmax, moment, h̄, w̄, h_rms, c, cosΛ), t_min)
     Ab_cap = 2 * t_cap * w̄
     return t_cap, Ab_cap
 end  # function size_cap
 
 """
-    size_web(τmax, shear, c_perp, web_height)
+    size_web(τmax, shear, c_perp, web_height; t_min = 0.0)
 
 Calculates area and thickness of wing webs based on maximum shear stress and geometric parameters.
 
@@ -300,13 +303,14 @@ Calculates area and thickness of wing webs based on maximum shear stress and geo
     - `shear::Float64`: Shear load
     - `c_perp::Float64`: Perpendicular chord length
     - `web_height::Float64`: Height of web
+    - `t_min::Float64`: (keyword, default 0.0) Minimum web thickness; `t_web = max(required, t_min)`
     
     **Outputs:**
     - `t_web::Float64`: Thickness of web
     - `Ab_web::Float64`: Cross-sectional area of web
 """
-function size_web(τmax, shear, c_perp, web_height)
-    t_web = calc_web_thickness(τmax, shear, c_perp, web_height)
+function size_web(τmax, shear, c_perp, web_height; t_min = 0.0)
+    t_web = max(calc_web_thickness(τmax, shear, c_perp, web_height), t_min)
     Ab_web = 2 * t_web * web_height
     return t_web, Ab_web
 end  # function size_web
@@ -348,9 +352,15 @@ Calculates the required cap thickness based on maximum stress and geometric para
     
     **Outputs:**
     - `t_cap::Float64`: Required thickness of cap
+
+Throws an `ErrorException` if the cap sizing is infeasible (`con >= h_rms^3`).
 """
 function calc_cap_thickness(σmax, moment, h̄, w̄, h_rms, c, cosΛ)
     con = moment * 6h̄ / w̄ * 1 / (c^3 * σmax * cosΛ^4)
+    if con >= h_rms^3
+        error("Wing cap sizing infeasible: bending load parameter con = $con >= h_rms^3 = $(h_rms^3). " *
+              "The cap cannot carry the moment within the sparbox height.")
+    end
     t_cap = 0.5 * (h_rms - ∛(h_rms^3 - con))
     return t_cap
 end  # function calc_cap_thickness
