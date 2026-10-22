@@ -809,6 +809,14 @@ readstruct(x) = read_input(x, structures, dstructures)
                                 max_avg_stress = webs_max_avg,
                                 safety_factor = webs_safety_fac)
 
+    # The legacy keys `sigma_struts`, `E_struts` and `strut_density` are stale and ignored;
+    # the strut material comes from the three keys below.
+    strut_max_avg = readstruct("strut_max_avg_stress")
+    strut_safety_fac = readstruct("strut_safety_factor")
+    wing.strut.material = StructuralAlloy(readstruct("strut_material"),
+                                max_avg_stress = strut_max_avg,
+                                safety_factor = strut_safety_fac)
+
     skin_max_avg = readstruct("skin_max_avg_stress")
     skin_safety_fac = readstruct("skin_safety_factor")
     fuselage.skin.material =  StructuralAlloy(readstruct("skin_material"), 
