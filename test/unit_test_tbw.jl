@@ -44,9 +44,36 @@ end
         end
     end
     # strut-on cases to be enabled later
-    # ac.wing.has_strut = true
+    # ac = read strut-braced model (wing_config = "strut_braced"); ac.options.has_strut is then true
     # outcome, detail = size_at_aspect_ratio(AR)
 end
+
+"Default input text with the wing configuration lines removed, so `edit` controls them."
+default_toml_without_wing_config() = replace(
+    read(joinpath(TASOPT.__TASOPTroot__, "../example/defaults/default_input.toml"), String),
+    r"^[ \t]*(wing_config|has_strut)[ \t]*=.*\n"m => "")
+
+"Insert `line` right below the `[table]` header in `txt`."
+insert_below_header(txt, table, line) = replace(txt, "[$table]" => "[$table]\n    $line"; count = 1)
+
+"Default input text with `wing_config = \"config\"` set in [Options]."
+toml_with_wing_config(config) =
+    insert_below_header(default_toml_without_wing_config(), "Options", "wing_config = \"$config\"")
+
+"Read an aircraft from TOML text; return the aircraft and the log records emitted while reading."
+function read_aircraft_from_text(txt)
+    logger = Test.TestLogger(min_level = CoreLogging.Info)
+    ac = mktempdir() do dir
+        path = joinpath(dir, "wing_config_test.toml")
+        write(path, txt)
+        CoreLogging.with_logger(logger) do
+            read_aircraft_model(path)
+        end
+    end
+    return ac, logger.logs
+end
+
+read_aircraft_with_wing_config(config) = first(read_aircraft_from_text(toml_with_wing_config(config)))
 
 @testset "TBW wing configuration option" verbose=true begin
     @testset "WingConfig string names" begin
@@ -59,22 +86,61 @@ end
         load_default_model()
     end
 
-    @testset "opt_wing_config follows has_strut on read" begin
-        # Read the default input after applying `edit` to its text
-        read_default_toml_edit(edit) = mktempdir() do dir
-            path = joinpath(dir, "wing_config_test.toml")
-            write(path, edit(read(joinpath(TASOPT.__TASOPTroot__, "../example/defaults/default_input.toml"), String)))
-            CoreLogging.with_logger(CoreLogging.NullLogger()) do
-                read_aircraft_model(path)
-            end
+    @testset "wing_config key selects the wing configuration" begin
+        @test !ac_default.options.has_strut
+        @test ac_default.options.opt_wing_config == WingConfig.Cantilever
+        @test_throws Exception (ac_default.options.has_strut = true)
+
+        for (name, config, strut) in (("cantilever",   WingConfig.Cantilever,  false),
+                                      ("strut_braced", WingConfig.StrutBraced, true),
+                                      ("truss_braced", WingConfig.TrussBraced, true))
+            ac = read_aircraft_with_wing_config(name)
+            @test ac.options.opt_wing_config == config
+            @test ac.options.has_strut == strut
         end
 
-        @test !ac_default.wing.has_strut
-        @test ac_default.options.opt_wing_config == WingConfig.Cantilever
+        @test_throws ErrorException read_aircraft_with_wing_config("biplane")
+    end
 
-        ac_strut = read_default_toml_edit(txt -> replace(txt, "has_strut = false" => "has_strut = true"))
-        @test ac_strut.wing.has_strut
-        @test ac_strut.options.opt_wing_config == WingConfig.StrutBraced
+    @testset "legacy has_strut key is a deprecated alias" begin
+        legacy_txt = insert_below_header(default_toml_without_wing_config(), "Wing", "has_strut = true")
+
+        ac_legacy, logs = read_aircraft_from_text(legacy_txt)
+        @test ac_legacy.options.opt_wing_config == WingConfig.StrutBraced
+        @test any(r -> r.level == CoreLogging.Info && occursin("has_strut", r.message) &&
+                       occursin("wing_config", r.message), logs)
+
+        # wing_config takes precedence when both are given
+        both_txt = insert_below_header(legacy_txt, "Options", "wing_config = \"cantilever\"")
+        ac_both, _ = read_aircraft_from_text(both_txt)
+        @test ac_both.options.opt_wing_config == WingConfig.Cantilever
+
+        # the new key alone gives no deprecation message
+        _, logs_new = read_aircraft_from_text(toml_with_wing_config("strut_braced"))
+        @test !any(r -> occursin("has_strut", r.message), logs_new)
+    end
+
+    @testset "Wing no longer stores has_strut" begin
+        @test !hasfield(TASOPT.structures.Wing, :has_strut)
+    end
+
+    @testset "save and read keep the wing configuration" begin
+        for name in ("strut_braced", "truss_braced")
+            ac = read_aircraft_with_wing_config(name)
+            mktempdir() do dir
+                path = joinpath(dir, "wing_config_roundtrip.toml")
+                save_aircraft_model(ac, path)
+                saved = TASOPT.TOML.parsefile(path)
+                @test saved["Options"]["wing_config"] == name
+                @test !haskey(saved["Wing"], "has_strut")
+
+                ac_reread = CoreLogging.with_logger(CoreLogging.NullLogger()) do
+                    read_aircraft_model(path)
+                end
+                @test ac_reread.options.opt_wing_config == ac.options.opt_wing_config
+                @test ac_reread.wing.strut.z ≈ ac.wing.strut.z
+            end
+        end
     end
 
     @testset "Options summary and show report the wing configuration" begin
@@ -95,14 +161,7 @@ end
 
 @testset "TBW strut struct" verbose=true begin
     # Default aircraft with the strut switched on, sized with the legacy strut model
-    read_strut_aircraft() = mktempdir() do dir
-        path = joinpath(dir, "strut_test.toml")
-        txt = read(joinpath(TASOPT.__TASOPTroot__, "../example/defaults/default_input.toml"), String)
-        write(path, replace(txt, "has_strut = false" => "has_strut = true"))
-        CoreLogging.with_logger(CoreLogging.NullLogger()) do
-            read_aircraft_model(path)
-        end
-    end
+    read_strut_aircraft() = read_aircraft_with_wing_config("strut_braced")
 
     ac = read_strut_aircraft()
     size_aircraft!(ac, printiter = false)
@@ -176,5 +235,26 @@ end
         strut_thicker = ac_thicker.wing.strut
         @test strut_thicker.chord ≈ sqrt(0.5 * strut_thicker.area / (0.08 * strut_thicker.thickness_to_chord)) rtol=1e-10
         @test strut_thicker.chord < strut.chord
+    end
+end
+
+@testset "Tail has no strut" verbose=true begin
+    @testset "Tail struct" begin
+        @test !hasfield(TASOPT.structures.Tail, :has_strut)
+        @test !hasfield(TASOPT.structures.Tail, :strut)
+    end
+
+    @testset "Wing keeps its strut" begin
+        @test hasfield(TASOPT.structures.Wing, :strut)
+    end
+
+    @testset "Default aircraft tails" begin
+        ac = CoreLogging.with_logger(CoreLogging.NullLogger()) do
+            load_default_model()
+        end
+        size_aircraft!(ac, printiter = false)
+        @test !hasproperty(ac.htail, :strut)
+        @test !hasproperty(ac.vtail, :strut)
+        @test ac.wing.strut isa TASOPT.structures.Strut
     end
 end
