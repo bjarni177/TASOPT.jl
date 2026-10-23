@@ -44,7 +44,7 @@ include("./utils/helper_functions.jl")
 
 # Enums used throughout modules (must come before any submodule that uses them)
 include(joinpath(__TASOPTroot__,"data_structs/options_enums.jl"))
-export EngineLocation, PropSysArch, WingMove, FuelType, TrimVar, TailSizing
+export EngineLocation, PropSysArch, WingMove, WingConfig, FuelType, TrimVar, TailSizing
 
 #Load modules
 include(joinpath(__TASOPTroot__,"utils/aircraft_utils.jl"))
