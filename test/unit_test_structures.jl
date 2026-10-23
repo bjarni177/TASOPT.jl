@@ -381,6 +381,111 @@ fort_Mo = Ms + (Ss - Nlift*Weng1)*0.5*b*(etas-etao) +
 @test wing_eng.inboard.max_shear_load ≈ fort_So
 @test wing_eng.inboard.moment ≈ fort_Mo
 @test wing_noeng.inboard.moment - wing_eng.inboard.moment ≈ Nlift*Weng1*dyeinn
+
+@testset "wing_weights! panel inertia update (design_wing_fuel)" begin
+    args = (po, gammat, gammas, Nlift, Weng1, 0, 0.0, 1, dyeinn, sigfac, rhofuel)
+    fwadd = TASOPT.wing_additional_weight(wing)
+
+    # Default (no design_wing_fuel): panel fields keep their input values
+    w_ref = deepcopy(wing)
+    ref = TASOPT.wing_weights!(w_ref, args...)
+    @test w_ref.inboard.weight == wing.inboard.weight
+    @test w_ref.outboard.weight == wing.outboard.weight
+    @test w_ref.inboard.dyW == wing.inboard.dyW
+    @test w_ref.outboard.dyW == wing.outboard.dyW
+    Wsinn_r, Wsout_r, dyWsinn_r, dyWsout_r, Wfcen_r, Wfinn_r, Wfout_r, _, _, dyWfinn_r, dyWfout_r = ref[2:12]
+    design_wing_fuel = 0.6 * 2.0 * (Wfcen_r + Wfinn_r + Wfout_r) # N
+
+    panels = Dict{Bool, NTuple{4, Float64}}()
+    for has_centerbox_fuel in (true, false)
+        w_new = deepcopy(wing)
+        out = TASOPT.wing_weights!(w_new, args...; design_wing_fuel = design_wing_fuel,
+                                   has_wing_fuel = true, has_centerbox_fuel = has_centerbox_fuel)
+        @test out == ref # return values do not depend on the new keywords
+
+        Wfmax = 2.0 * ((has_centerbox_fuel ? Wfcen_r : 0.0) + Wfinn_r + Wfout_r)
+        rfmax = design_wing_fuel / Wfmax
+        @test w_new.inboard.weight  == Wsinn_r * (1.0 + fwadd) + rfmax * Wfinn_r
+        @test w_new.outboard.weight == Wsout_r * (1.0 + fwadd) + rfmax * Wfout_r
+        @test w_new.inboard.dyW     == dyWsinn_r * (1.0 + fwadd) + rfmax * dyWfinn_r
+        @test w_new.outboard.dyW    == dyWsout_r * (1.0 + fwadd) + rfmax * dyWfout_r
+        panels[has_centerbox_fuel] = (w_new.inboard.weight, w_new.outboard.weight,
+                                      w_new.inboard.dyW, w_new.outboard.dyW)
+    end
+    # Without centerbox fuel the same fuel mass fills a smaller tank, so rfmax is larger
+    @test panels[true] != panels[false]
+    @test panels[false][1] > panels[true][1]
+
+    # No wing fuel: rfmax = 0, panels carry only structure weight
+    w_dry = deepcopy(wing)
+    out_dry = TASOPT.wing_weights!(w_dry, args...; design_wing_fuel = design_wing_fuel, has_wing_fuel = false)
+    @test out_dry == ref
+    @test w_dry.inboard.weight  == Wsinn_r * (1.0 + fwadd)
+    @test w_dry.outboard.weight == Wsout_r * (1.0 + fwadd)
+    @test w_dry.inboard.dyW     == dyWsinn_r * (1.0 + fwadd)
+    @test w_dry.outboard.dyW    == dyWsout_r * (1.0 + fwadd)
+end
+
+@testset "wing_case_loads matches the section loads of wing_weights!" begin
+    dyeout = 0.25 * b * (1.0 - etas)
+    configs = (
+        "no engines"                      => (We = Weng1,      neout = 0, dyeout = 0.0,    neinn = 0, dyeinn = 0.0),
+        "inboard engine at ηs"            => (We = Weng1,      neout = 0, dyeout = 0.0,    neinn = 1, dyeinn = dyeinn),
+        "outboard and heavy inboard engine" => (We = 10*Weng1, neout = 1, dyeout = dyeout, neinn = 1, dyeinn = dyeinn),
+    )
+    for (label, c) in configs
+        @testset "$label" begin
+            w_sized = deepcopy(wing)
+            w_loads = deepcopy(wing)
+            TASOPT.wing_weights!(w_sized, po, gammat, gammas, Nlift, c.We, c.neout, c.dyeout,
+                                 c.neinn, c.dyeinn, sigfac, rhofuel)
+            loads = TASOPT.wing_case_loads(TASOPT.structures.Cantilever(), w_loads, po, gammat, gammas,
+                                           Nlift, c.We, c.neout, c.dyeout, c.neinn, c.dyeinn)
+            @test loads isa TASOPT.structures.WingCaseLoads
+            @test loads.S_root  == w_sized.inboard.max_shear_load
+            @test loads.M_root  == w_sized.inboard.moment
+            @test loads.S_break == w_sized.outboard.max_shear_load
+            @test loads.M_break == w_sized.outboard.moment
+        end
+    end
+
+    # The heavy inboard engine drives the inboard loads onto the outboard ones (max(So, outboard) clamp)
+    w_heavy = deepcopy(wing)
+    heavy = TASOPT.wing_case_loads(TASOPT.structures.Cantilever(), w_heavy, po, gammat, gammas,
+                                   Nlift, 10*Weng1, 1, dyeout, 1, dyeinn)
+    @test heavy.S_root == heavy.S_break
+    @test heavy.M_root == heavy.M_break
+end
+
+@testset "wing_weights! with a section loads envelope" begin
+    args = (po, gammat, gammas, Nlift, Weng1, 0, 0.0, 1, dyeinn, sigfac, rhofuel)
+    w_ref = deepcopy(wing)
+    ref = TASOPT.wing_weights!(w_ref, args...)
+    section_loads(w) = (S_root = w.inboard.max_shear_load, M_root = w.inboard.moment,
+                        S_break = w.outboard.max_shear_load, M_break = w.outboard.moment)
+    computed = section_loads(w_ref)
+    thicknesses(w) = (w.inboard.caps.thickness, w.outboard.caps.thickness,
+                      w.inboard.webs.thickness, w.outboard.webs.thickness)
+
+    # No envelope leaves the section loads and the returns unchanged
+    w_none = deepcopy(wing)
+    @test TASOPT.wing_weights!(w_none, args...; section_loads_envelope = nothing) == ref
+    @test section_loads(w_none) == computed
+    @test thicknesses(w_none) == thicknesses(w_ref)
+
+    # An envelope equal to the computed loads changes nothing
+    w_same = deepcopy(wing)
+    @test TASOPT.wing_weights!(w_same, args...; section_loads_envelope = computed) == ref
+    @test section_loads(w_same) == computed
+    @test thicknesses(w_same) == thicknesses(w_ref)
+
+    # Larger envelope loads replace the section loads and thicken the caps and webs
+    larger = map(x -> 1.5 * x, computed)
+    w_larger = deepcopy(wing)
+    TASOPT.wing_weights!(w_larger, args...; section_loads_envelope = larger)
+    @test section_loads(w_larger) == larger
+    @test all(thicknesses(w_larger) .> thicknesses(w_ref))
+end
 #end wing_weights
 
 #wing_weights for Htail
