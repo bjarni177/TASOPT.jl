@@ -366,7 +366,8 @@ function _size_aircraft!(ac; itermax=35,
         dxWfinn,dxWfout,
         dyWfinn,dyWfout,lstrutp = wing_weights!(wing, po, γt, γs,
                                             Nlift, Weng1, 0, 0.0, 1, dyeinn,
-                                            parg[igsigfac], rhofuel)
+                                            parg[igsigfac], rhofuel;
+                                            has_strut = options.has_strut)
 
         # Calculate fuel weight if stored in wings
         Wfmax, dxWfmax, rfmax = 0.0, 0.0, 0.0
@@ -387,7 +388,7 @@ function _size_aircraft!(ac; itermax=35,
         wing.outboard.caps.weight = wing.inboard.caps.weight
 
         # Calculate strut properties
-        if wing.has_strut
+        if options.has_strut
             cstrut = sqrt(0.5 * wing.strut.area / (wing.strut.wall_to_depth * wing.strut.thickness_to_chord))
             wing.strut.chord = cstrut
             wing.strut.S = 2.0 * cstrut * lstrutp
