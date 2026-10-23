@@ -77,7 +77,7 @@ function _size_aircraft!(ac; itermax=35,
     parg[igWpay] = Wpay
 
     # Extract weight fractions and factors
-    fwadd = wing_additional_weight(wing)
+    fwadd = wing_additional_weight(wing) # not used anymore: the panel-inertia update that used it now lives in wing_weights!
     flgnose = landing_gear.nose_gear.overall_mass_fraction
     flgmain = landing_gear.main_gear.overall_mass_fraction
     fLo =  wing.fuse_lift_carryover
@@ -359,6 +359,21 @@ function _size_aircraft!(ac; itermax=35,
         # dyeinn is its moment arm about the wing root station ηo [m]: y_e - y_o = (b/2)(ηs - ηo)
         dyeinn = 0.5 * wing.layout.span * (wing.layout.ηs - wing.layout.ηo)
 
+        # Load cases of the wing sizing: records the case loads in wing.sizing_loads (results, governing_root,
+        # governing_break and n_computed). The returned envelope sizes the wing when more than one case is active
+        # (with only the pull-up the loads computed in wing_weights! are used). The wing is not modified.
+        # parg[igWfmax] is the wing tank capacity of the previous iteration.
+        envelope = nothing
+        if !options.has_strut
+            masses = wing_sizing_masses(W_cruise = BW, W_MTO = WMTO, W_pay = Wpay, W_paymax = Wpaymax,
+                                        W_fuel = parg[igWfuel], freserve = parg[igfreserve],
+                                        W_fuel_cap = parg[igWfmax], has_wing_fuel = options.has_wing_fuel)
+            envelope = evaluate_wing_sizing_cases!(wing, masses, options.has_wing_fuel, para[iarclt, ip], para[iarcls, ip],
+                                                   Lhtail, γt, γs, Weng1, dyeinn)
+        end
+        more_than_one_case = length(wing.sizing_loads.results) > 1
+        section_loads_envelope = more_than_one_case ? envelope : nothing
+
         # Call wing_weights function
         Wwing,Wsinn,Wsout,
         dyWsinn,dyWsout,
@@ -367,7 +382,11 @@ function _size_aircraft!(ac; itermax=35,
         dyWfinn,dyWfout,lstrutp = wing_weights!(wing, po, γt, γs,
                                             Nlift, Weng1, 0, 0.0, 1, dyeinn,
                                             parg[igsigfac], rhofuel;
-                                            has_strut = options.has_strut)
+                                            has_strut = options.has_strut,
+                                            design_wing_fuel = Wpay - Wpaymax + parg[igWfuel],
+                                            has_wing_fuel = options.has_wing_fuel,
+                                            has_centerbox_fuel = options.has_centerbox_fuel,
+                                            section_loads_envelope = section_loads_envelope)
 
         # Calculate fuel weight if stored in wings
         Wfmax, dxWfmax, rfmax = 0.0, 0.0, 0.0
@@ -394,13 +413,6 @@ function _size_aircraft!(ac; itermax=35,
             wing.strut.S = 2.0 * cstrut * lstrutp
         end
 
-        # Update wing panel weights
-        wing.inboard.weight = Wsinn * (1.0 + fwadd) + rfmax * Wfinn
-        wing.outboard.weight = Wsout * (1.0 + fwadd) + rfmax * Wfout
-        wing.inboard.dyW = dyWsinn * (1.0 + fwadd) + rfmax * dyWfinn
-        wing.outboard.dyW = dyWsout * (1.0 + fwadd) + rfmax * dyWfout
-
-        #TODO: No reason why above lines shouldnt be inside wing_weights
         # -------------------------------
         #      Tail sizing section
         # -------------------------------
