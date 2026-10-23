@@ -94,7 +94,6 @@ function _size_aircraft!(ac; itermax=35,
 
     # Tail surface taper ratios and strut parameters
     λhs = λvs = 1.0
-    tohstrut = 0.05
 
 
     # Load factors and dynamic pressure
@@ -389,7 +388,7 @@ function _size_aircraft!(ac; itermax=35,
 
         # Calculate strut properties
         if wing.has_strut
-            cstrut = sqrt(0.5 * wing.strut.axial_force / (tohstrut * wing.strut.thickness_to_chord))
+            cstrut = sqrt(0.5 * wing.strut.area / (wing.strut.wall_to_depth * wing.strut.thickness_to_chord))
             wing.strut.chord = cstrut
             wing.strut.S = 2.0 * cstrut * lstrutp
         end
