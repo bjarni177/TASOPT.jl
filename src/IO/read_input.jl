@@ -590,9 +590,28 @@ readwing(x) = read_input(x, wing_i, dwing)
 
     ## Strut details only used if the wing is braced
     if _opt_wing_config != WingConfig.Cantilever
-        wing.strut.z  = Distance(readwing("z_strut"))
-        wing.strut.thickness_to_chord  = readwing("strut_toc")
-        wing.strut.local_velocity_ratio = readwing("strut_local_velocity_ratio")
+        strut_i = get!(wing_i, "Strut", Dict{String, Any}())
+
+        # Deprecated flat [Wing] keys are used unless [Wing.Strut] sets the same input
+        for (flat_key, strut_key) in ("z_strut" => "z_fuselage_attach",
+                                      "strut_toc" => "thickness_to_chord",
+                                      "strut_local_velocity_ratio" => "local_velocity_ratio")
+            if haskey(wing_i, flat_key)
+                @info "The [Wing] key \"$flat_key\" is deprecated; use \"$strut_key\" in [Wing.Strut] instead."
+                get!(strut_i, strut_key, wing_i[flat_key])
+            end
+        end
+
+        readstrut(x) = read_input(x, strut_i, dwing["Strut"])
+        wing.strut.z = Distance(readstrut("z_fuselage_attach"))
+        wing.strut.y_root = Distance(readstrut("y_fuselage_attach"))
+        wing.strut.thickness_to_chord = readstrut("thickness_to_chord")
+        wing.strut.local_velocity_ratio = readstrut("local_velocity_ratio")
+        wing.strut.wall_to_depth = readstrut("wall_to_depth")
+        wing.strut.box_width_to_chord = readstrut("box_width_to_chord")
+        wing.strut.web_to_box_height = readstrut("web_to_box_height")
+        wing.strut.end_fixity_K = readstrut("end_fixity_K")
+        wing.strut.weight_frac_added = readstrut("weight_frac_added")
     end
 
     airfoil_data = joinpath(__TASOPTroot__,"airfoil_data/", readwing("airfoil"))
