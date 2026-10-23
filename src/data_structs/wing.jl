@@ -178,9 +178,6 @@ $TYPEDFIELDS
     """Tail Sections """
     outboard::WingSection= WingSection()
     inboard::WingSection = WingSection()
-    """Tail Strut"""
-    has_strut::Bool = false
-    strut::Strut = Strut()
     """Tip lift roll-off factor"""
     tip_lift_loss::Float64 = 0.0
     """Aircraft pitching moment contribution from the weight distribution of the strut [N m]"""
