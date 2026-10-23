@@ -44,6 +44,14 @@ $TYPEDFIELDS
     trefftz_config::aerodynamics.TrefftzPlaneConfig
 end
 
+# `options.has_strut` is derived from `opt_wing_config` (true for `StrutBraced` and `TrussBraced`,
+# false for `Cantilever`). It is read-only: there is no such field, so assigning to it throws.
+function Base.getproperty(opt::Options, name::Symbol)
+  name === :has_strut && return getfield(opt, :opt_wing_config) != WingConfig.Cantilever
+  return getfield(opt, name)
+end
+Base.propertynames(opt::Options, private::Bool=false) = (fieldnames(Options)..., :has_strut)
+
 function Base.summary(opt::Options)
   println("\n-------- Options Summary --------")
   println("Fuel Type: ", string(opt.opt_fuel))
