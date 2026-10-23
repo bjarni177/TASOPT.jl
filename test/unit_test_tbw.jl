@@ -472,3 +472,104 @@ end
         @test ac.wing.strut isa TASOPT.structures.Strut
     end
 end
+
+# Wing sizing load cases: container types and their defaults on `Wing`
+
+@testset "TBW wing sizing load cases" verbose=true begin
+    # local bindings, so the names cannot clash with anything TASOPT exports
+    WingMassState = TASOPT.structures.WingMassState
+    WingLoadKind = TASOPT.structures.WingLoadKind
+    WingLoadCase = TASOPT.structures.WingLoadCase
+    WingCaseLoads = TASOPT.structures.WingCaseLoads
+    WingSizingLoads = TASOPT.structures.WingSizingLoads
+
+    case_names = (:pullup, :pushover, :pullup_light, :pushover_light,
+                  :taxi, :gust_up_light, :gust_down_light)
+
+    @testset "enum members" begin
+        @test Set(Symbol.(instances(WingMassState.T))) ==
+              Set([:DesignCruise, :MTOW_MaxFuel, :MZFW, :Light])
+        @test Set(Symbol.(instances(WingLoadKind.T))) == Set([:Maneuver, :Gust, :Ground])
+    end
+
+    @testset "wing sizing load cases defaults" begin
+        loads = WingSizingLoads()
+
+        @test Tuple(n for n in fieldnames(WingSizingLoads)
+                    if fieldtype(WingSizingLoads, n) === WingLoadCase) == case_names
+        @test !hasfield(WingSizingLoads, :governing_strut)
+
+        # only the legacy pull-up case is active
+        for name in case_names
+            @test getfield(loads, name).active == (name == :pullup)
+        end
+
+        @test loads.pullup.kind == WingLoadKind.Maneuver
+        @test loads.pullup.load_factor == 3.0
+        @test loads.pullup.mass_state == WingMassState.DesignCruise
+
+        expected = (pushover        = (WingLoadKind.Maneuver, -1.0, WingMassState.MTOW_MaxFuel),
+                    pullup_light    = (WingLoadKind.Maneuver,  3.0, WingMassState.Light),
+                    pushover_light  = (WingLoadKind.Maneuver, -1.0, WingMassState.Light),
+                    taxi            = (WingLoadKind.Ground,   -2.0, WingMassState.MTOW_MaxFuel),
+                    gust_up_light   = (WingLoadKind.Gust,      1.0, WingMassState.Light),
+                    gust_down_light = (WingLoadKind.Gust,     -1.0, WingMassState.Light))
+        for (name, (kind, load_factor, mass_state)) in pairs(expected)
+            case = getfield(loads, name)
+            @test case.kind == kind
+            @test case.load_factor == load_factor
+            @test case.mass_state == mass_state
+        end
+
+        for name in case_names
+            case = getfield(loads, name)
+            @test case.gust_velocity_EAS == 15.24
+            @test case.gust_speed_EAS == 0.0
+            @test case.tail_load_scale == 1.0
+            @test case.n_computed == 0.0
+        end
+
+        @test isempty(loads.results)
+        @test loads.results isa Dict{Symbol,WingCaseLoads}
+        @test loads.governing_root == :pullup
+        @test loads.governing_break == :pullup
+    end
+
+    @testset "WingCaseLoads holds only root and break shear and moment" begin
+        @test fieldnames(WingCaseLoads) == (:S_root, :M_root, :S_break, :M_break)
+        case_loads = WingCaseLoads()
+        for name in fieldnames(WingCaseLoads)
+            @test getfield(case_loads, name) === 0.0
+        end
+        @test WingCaseLoads(M_root = 5.0e6).M_root == 5.0e6
+    end
+
+    @testset "Wing carries its own sizing loads" begin
+        @test fieldtype(TASOPT.structures.Wing, :sizing_loads) === WingSizingLoads
+
+        wing_a = TASOPT.structures.Wing()
+        wing_b = TASOPT.structures.Wing()
+        @test wing_a.sizing_loads isa WingSizingLoads
+        @test wing_a.sizing_loads !== wing_b.sizing_loads
+
+        wing_a.sizing_loads.pullup.load_factor = 2.5
+        wing_a.sizing_loads.pushover.active = true
+        wing_a.sizing_loads.results[:pullup] = WingCaseLoads(M_root = 1.0)
+        wing_a.sizing_loads.governing_root = :taxi
+
+        @test wing_b.sizing_loads.pullup.load_factor == 3.0
+        @test !wing_b.sizing_loads.pushover.active
+        @test isempty(wing_b.sizing_loads.results)
+        @test wing_b.sizing_loads.governing_root == :pullup
+        @test WingSizingLoads().pullup.load_factor == 3.0
+    end
+
+    @testset "sizing loads of the default aircraft" begin
+        ac = Base.CoreLogging.with_logger(Base.CoreLogging.NullLogger()) do
+            load_default_model()
+        end
+        @test ac.wing.sizing_loads isa WingSizingLoads
+        @test ac.wing.sizing_loads.pullup.active
+        @test count(n -> getfield(ac.wing.sizing_loads, n).active, case_names) == 1
+    end
+end
