@@ -11,25 +11,93 @@ $TYPEDFIELDS
 @kwdef mutable struct Strut
     """Strut Material """
     material::StructuralAlloy = StructuralAlloy("TASOPT-Al")
+
+    # Geometry inputs
     """Strut Area [m^2] """
     S::Float64 = 0
-    """Strut Length [m] """
-    length::Float64 = 0
     """Strut z position [m]"""
     z::Float64 = 0
+    """Strut y position at the fuselage attachment [m]"""
+    y_root::Float64 = 0
     """Strut thickness to chord"""
     thickness_to_chord::Float64 = 0
+    """Strut box wall thickness to depth ratio"""
+    wall_to_depth::Float64 = 0.05
+    """Strut box width to chord ratio"""
+    box_width_to_chord::Float64 = 0.5
+    """Strut box web height to box height ratio"""
+    web_to_box_height::Float64 = 0.75
+    """Euler effective-length factor of the strut end fixity"""
+    end_fixity_K::Float64 = 1.0
     """Strut local velocity ratio"""
     local_velocity_ratio::Float64 = 0
-    """Cosine of strut sweep angle"""
-    cos_lambda::Float64 = 0 
-    """Strut weight [N]"""
-    weight::Float64 = 0
-    """Strut axial force [N]"""
-    axial_force::Float64 = 0
+
+    # Computed geometry
+    """Strut Length [m] """
+    length::Float64 = 0
     """Strut chord [m]"""
     chord::Float64 = 0
+    """Strut cross-sectional area [m^2]"""
+    area::Float64 = 0
+    """Cosine of strut sweep angle"""
+    cos_lambda::Float64 = 0 
+    """Strut dihedral angle [rad]"""
+    dihedral::Float64 = 0
+
+    # Loads
+    """Maximum strut tension force [N]"""
+    axial_force::Float64 = 0
+    """Strut axial force in the most compressive case [N]"""
+    axial_force_compression::Float64 = 0
+    """Strut Euler buckling load P_cr [N]"""
+    buckling_load::Float64 = 0
+    """Strut minor-axis bending stiffness [N m^2]"""
+    EI_min::Float64 = 0
+    """Governing strut sizing criterion: `:tension`, `:buckling` or `:gauge`"""
+    sizing_criterion::Symbol = :none
+
+    # Aerodynamics
+    """Strut lift coefficient"""
+    CL::Float64 = 0
+    """Strut lift divided by total lift"""
+    lift_fraction::Float64 = 0
+
+    # Weights
+    """Strut weight [N]"""
+    weight::Float64 = 0
+    """Added weight fraction for fairings and fittings"""
+    weight_frac_added::Float64 = 0.60 # Placeholder - derrived from Boeing SUGAR Phase IV, NASA CR, NTRS 20220016017, Tables 12/16 ... may also contain the weight of the jury strut too
     """Aircraft pitching moment contribution from the weight distribution of the strut [N m]"""
+    dxW::Float64 = 0
+end
+
+"""
+$TYPEDEF
+
+Jury strut connecting the wing to the main strut
+
+$TYPEDFIELDS
+"""
+@kwdef mutable struct JuryStrut
+    """Jury strut Material """
+    material::StructuralAlloy = StructuralAlloy("TASOPT-Al")
+    """Wing-side attachment, as a fraction of the wing semispan"""
+    eta_wing::Float64 = 0
+    """Strut-side attachment, as a fraction of the strut length"""
+    eta_strut::Float64 = 0
+    """Jury strut length [m]"""
+    length::Float64 = 0
+    """Jury strut cross-sectional area [m^2]"""
+    area::Float64 = 0
+    """Jury strut axial force [N]"""
+    axial_force::Float64 = 0
+    """Jury strut Euler buckling load [N]"""
+    buckling_load::Float64 = 0
+    """Jury strut weight [N]"""
+    weight::Float64 = 0
+    """Added weight fraction for fairings and fittings"""
+    weight_frac_added::Float64 = 0.60 # Placeholder - Assumed to be the same value as for the main strut
+    """Aircraft pitching moment contribution from the weight distribution of the jury strut [N m]"""
     dxW::Float64 = 0
 end
 
