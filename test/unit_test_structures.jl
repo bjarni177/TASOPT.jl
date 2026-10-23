@@ -198,7 +198,6 @@ htail.layout.S = 48.60805615580396477071
 htail.outboard.cross_section.width_to_chord = 0.50000000000000000000 
 htail.outboard.cross_section.web_to_box_height = 0.75000000000000000000 
 htail.layout.ηs = htail.layout.root_span/htail.layout.span 
-htail.strut.cos_lambda = 1.00000000000000000000 
 htail.inboard.moment = 1738109.50381608842872083187 
 htail.outboard.moment = 1738109.50381608842872083187 
 htail.inboard.max_shear_load = 561216.24125756067223846912 
@@ -240,7 +239,6 @@ vtail.dxW = 12001.92569704716697742697
 vtail.outboard.cross_section.width_to_chord = 0.50000000000000000000 
 vtail.outboard.cross_section.web_to_box_height = 0.75000000000000000000 
 vtail.layout.ηs = vtail.layout.root_span/vtail.layout.span 
-vtail.strut.cos_lambda = 1.00000000000000000000 
 vtail.inboard.moment = 3366297.29689422156661748886 
 vtail.outboard.moment = 3366297.29689422156661748886 
 vtail.inboard.max_shear_load = 1039776.82288908748887479305 
@@ -354,6 +352,17 @@ Wwing,Wsinn,Wsout,
 @test fort_dyWfinn ≈ dyWfinn 
 @test fort_dyWfout ≈ dyWfout 
 @test fort_lstrutp ≈ lstrutp
+
+# The strut branch is selected by the has_strut keyword (cantilever by default)
+wing_cantilever = deepcopy(wing)
+wing_braced = deepcopy(wing)
+wing_braced.strut.z = 154 * in_to_m
+TASOPT.wing_weights!(wing_cantilever, po, gammat, gammas, Nlift, Weng1, 0, 0.0, 0, 0.0, sigfac, rhofuel)
+TASOPT.wing_weights!(wing_braced, po, gammat, gammas, Nlift, Weng1, 0, 0.0, 0, 0.0, sigfac, rhofuel; has_strut = true)
+@test wing_cantilever.strut.cos_lambda == 1.0
+@test wing_braced.strut.cos_lambda < 1.0
+@test wing_braced.strut.weight > 0
+@test wing_braced.inboard.moment == wing_braced.outboard.moment
 
 # Engine at the span break ηs: root shear and moment should match
 # TASOPT 2.16 surfw.f (Drela eqs. 177-178 with R = N*We), i.e. moment arm (b/2)(ηs-ηo)
