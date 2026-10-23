@@ -73,6 +73,54 @@ function size_wing_section!(section, sweep, sigfac; t_cap_min = 0.0, t_web_min =
 end
 
 """
+    Cantilever
+
+Marker type for a wing without a strut. Its inboard loads follow from the outboard loads and the
+inboard panel weights; see [`wing_section_loads`](@ref).
+"""
+struct Cantilever end
+
+"""
+    wing_section_loads(::Cantilever, wing, po, gammas, Nload, We, neinn, dyeinn)
+
+Sets the inboard section shear and bending moment of a wing without a strut, from the outboard
+section loads (`wing.outboard.max_shear_load`, `wing.outboard.moment`), the inboard lift distribution
+and the inboard panel weight, including bending relief from inboard engines.
+
+!!! details "🔃 Inputs and Outputs"
+    **Inputs:**
+    - `wing::TASOPT.structures.Wing`: Wing structure, with the outboard section loads already set.
+    - `po::Float64`: Wing root loading magnitude.
+    - `gammas::Float64`: Wing inner section taper ratio.
+    - `Nload::Int`: Max vertical load factor for wing bending loads.
+    - `We::Float64`: Weight of one engine [N].
+    - `neinn::Int`: Number of engines per wing mounted at or inboard of the wing break.
+    - `dyeinn::Float64`: Average spanwise moment arm of the inboard engines about the wing root station ηo [m].
+
+    **Outputs:**
+    - `wing.inboard.max_shear_load` and `wing.inboard.moment` are updated in place.
+"""
+function wing_section_loads(::Cantilever, wing, po, gammas, Nload, We, neinn, dyeinn)
+    etao = wing.layout.ηo
+    etas = wing.layout.ηs
+
+    # Modifed to account for bending relief from multiple engines.
+    # dyeinn allows engine to be in locations other than ηs
+    So = wing.outboard.max_shear_load - Nload*neinn*We +
+        0.25*po*wing.layout.span*(1.0+gammas)*(etas-etao) -
+        Nload*wing.inboard.weight
+    Mo = wing.outboard.moment + wing.outboard.max_shear_load*0.5*wing.layout.span*(etas-etao) +
+        (1.0/24.0)*po*wing.layout.span^2*(1.0+2.0*gammas)*(etas-etao)^2 -
+        Nload*wing.inboard.dyW - Nload*neinn*We*dyeinn
+
+    #----- limit So,Mo to Ss,Ms, which might be needed with heavy outboard engine
+    #-      (rules out negatively-tapered structure, deemed not feasible for downloads)
+    wing.inboard.max_shear_load = max(So ,wing.outboard.max_shear_load)
+    wing.inboard.moment = max(Mo ,wing.outboard.moment)
+    return nothing
+end # wing_section_loads
+
+"""
     wing_weights!(wing, po, gammat, gammas, 
        Nload, We, neout, dyeout, neinn, dyeinn, sigfac, rhofuel; n_wings=2.0, has_strut=false)
 
@@ -139,19 +187,7 @@ function wing_weights!(wing, po, gammat, gammas,
         Rstrut = 0.
         Pstrut = 0.
 
-        # Modifed to account for bending relief from multiple engines.
-        # dyeinn allows engine to be in locations other than ηs
-        So = wing.outboard.max_shear_load - Nload*neinn*We +
-            0.25*po*wing.layout.span*(1.0+gammas)*(etas-etao) -
-            Nload*wing.inboard.weight
-        Mo = wing.outboard.moment + wing.outboard.max_shear_load*0.5*wing.layout.span*(etas-etao) +
-            (1.0/24.0)*po*wing.layout.span^2*(1.0+2.0*gammas)*(etas-etao)^2 -
-            Nload*wing.inboard.dyW - Nload*neinn*We*dyeinn
-
-        #----- limit So,Mo to Ss,Ms, which might be needed with heavy outboard engine
-        #-      (rules out negatively-tapered structure, deemed not feasible for downloads)
-        wing.inboard.max_shear_load = max(So ,wing.outboard.max_shear_load)
-        wing.inboard.moment = max(Mo ,wing.outboard.moment)
+        wing_section_loads(Cantilever(), wing, po, gammas, Nload, We, neinn, dyeinn)
 
         inboard_dims = size_wing_section!(wing.inboard, wing.sweep, sigfac)
 
