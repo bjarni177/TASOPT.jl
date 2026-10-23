@@ -78,7 +78,7 @@ Jury strut connecting the wing to the main strut
 
 $TYPEDFIELDS
 """
-@kwdef mutable struct JuryStrut
+@kwdef mutable struct JuryStrut ### Consider if this is required or not!
     """Jury strut Material """
     material::StructuralAlloy = StructuralAlloy("TASOPT-Al")
     """Wing-side attachment, as a fraction of the wing semispan"""
