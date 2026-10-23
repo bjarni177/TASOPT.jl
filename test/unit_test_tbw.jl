@@ -602,3 +602,335 @@ end
         @test quiet_sized_wing_weight(2.5) < quiet_sized_wing_weight(3.0)
     end
 end
+
+# Wing mass states: lift weight and fuel split of each sizing case
+
+@testset "wing mass states" verbose=true begin
+    WingMassState = TASOPT.structures.WingMassState
+    wing_mass_state = TASOPT.structures.wing_mass_state
+
+    weights = (W_cruise = 900e3, W_MTO = 1000e3, W_fuel = 200e3, W_reserve = 30e3,
+               W_empty = 500e3, W_fuel_cap = 300e3, W_fuel_at_MTO = 150e3, r_fuel_design = 0.6)
+
+    # expected (W_lift, r_fuel_wing, W_fuel_fuse) with fuel in the fuselage
+    fuselage_fuel = (
+        (WingMassState.DesignCruise, 900e3, 0.0, 200e3),
+        (WingMassState.MTOW_MaxFuel, 1000e3, 0.0, 150e3),
+        (WingMassState.MZFW, 830e3, 0.0, 30e3),
+        (WingMassState.Light, 530e3, 0.0, 30e3),
+    )
+    # expected with fuel in the wing
+    wing_fuel = (
+        (WingMassState.DesignCruise, 900e3, 0.6, 0.0),
+        (WingMassState.MTOW_MaxFuel, 1000e3, 0.5, 0.0),
+        (WingMassState.MZFW, 830e3, 0.1, 0.0),
+        (WingMassState.Light, 530e3, 0.1, 0.0),
+    )
+
+    @testset "fuel in the wing" begin
+        for (state, W_lift, r_fuel_wing, W_fuel_fuse) in wing_fuel
+            result = wing_mass_state(state, true; weights...)
+            @test result.W_lift ≈ W_lift
+            @test result.r_fuel_wing ≈ r_fuel_wing
+            @test result.W_fuel_fuse == W_fuel_fuse
+        end
+    end
+
+    @testset "fuel in the fuselage" begin
+        for (state, W_lift, r_fuel_wing, W_fuel_fuse) in fuselage_fuel
+            result = wing_mass_state(state, false; weights...)
+            @test result.W_lift ≈ W_lift
+            @test result.r_fuel_wing == r_fuel_wing
+            @test result.W_fuel_fuse ≈ W_fuel_fuse
+        end
+    end
+
+    @testset "no wing tank capacity without fuel in the wing" begin
+        for state in instances(WingMassState.T)
+            result = wing_mass_state(state, false; weights..., W_fuel_cap = 0.0)
+            @test all(isfinite, values(result))
+            @test result.r_fuel_wing == 0.0
+        end
+    end
+
+    @testset "MTOW wing fuel fraction is capped at one" begin
+        result = wing_mass_state(WingMassState.MTOW_MaxFuel, true; weights..., W_fuel_at_MTO = 400e3)
+        @test result.r_fuel_wing == 1.0
+        @test result.W_fuel_fuse == 0.0
+    end
+end
+
+# Wing root loading of each sizing case
+
+@testset "wing sizing case root loading" verbose=true begin
+    wing_case_root_loading = TASOPT.wing_case_root_loading
+    wing_loading = TASOPT.wing_loading
+
+    wing = CoreLogging.with_logger(CoreLogging.NullLogger()) do
+        load_default_model().wing
+    end
+    wing.layout.span = 60.0   # the span is only set when the aircraft is sized
+    cases = wing.sizing_loads
+    rclt, rcls = 1.0, 1.0
+    W_lift, Lhtail, n_pullup = 5.0e5, 2.0e4, 3.0
+    root_loading(case) = wing_case_root_loading(case, wing, rclt, rcls, W_lift, Lhtail, n_pullup)
+
+    @testset "pull-up case equals wing_loading at the pull-up load factor" begin
+        loads = root_loading(cases.pullup)
+        @test loads.Nload == 3.0
+        @test loads.po == wing_loading(wing, rclt, rcls, n_pullup, W_lift, Lhtail)
+    end
+
+    @testset "push-over case scales the tail load with the load factor" begin
+        loads = root_loading(cases.pushover)
+        @test loads.Nload == -1.0
+        @test loads.po == wing_loading(wing, rclt, rcls, -1.0, W_lift, (-1.0 / n_pullup) * Lhtail)
+    end
+
+    @testset "tail_load_scale scales the tail load of the case" begin
+        half = deepcopy(cases.pushover)
+        half.tail_load_scale = 0.5
+        @test root_loading(half).po ==
+              wing_loading(wing, rclt, rcls, -1.0, W_lift, 0.5 * (-1.0 / n_pullup) * Lhtail)
+        @test root_loading(half).po != root_loading(cases.pushover).po
+    end
+
+    @testset "ground case has no wing lift" begin
+        loads = root_loading(cases.taxi)
+        @test loads.Nload == -2.0
+        @test loads.po == 0.0
+    end
+
+    @testset "gust cases are not supported yet" begin
+        @test_throws ArgumentError root_loading(cases.gust_up_light)
+    end
+end
+
+# Envelope of the wing sizing cases
+
+@testset "wing sizing case envelope" verbose=true begin
+    Cantilever = TASOPT.structures.Cantilever
+    wing_case_loads = TASOPT.wing_case_loads
+    wing_case_root_loading = TASOPT.wing_case_root_loading
+
+    base_wing = CoreLogging.with_logger(CoreLogging.NullLogger()) do
+        load_default_model().wing
+    end
+    base_wing.layout.span = 60.0   # the span is only set when the aircraft is sized
+    # section weights and moments are zero until the wing is sized
+    base_wing.inboard.weight, base_wing.inboard.dyW = 4.0e4, 6.0e4
+    base_wing.outboard.weight, base_wing.outboard.dyW = 2.0e4, 8.0e4
+    # sentinel section loads, which the evaluation must leave untouched
+    base_wing.inboard.max_shear_load, base_wing.inboard.moment = 111.0, 222.0
+    base_wing.outboard.max_shear_load, base_wing.outboard.moment = 333.0, 444.0
+
+    masses = (W_cruise = 5.0e5, W_MTO = 5.5e5, W_fuel = 1.0e5, W_reserve = 2.0e4,
+              W_empty = 3.0e5, W_fuel_cap = 1.5e5, W_fuel_at_MTO = 8.0e4, r_fuel_design = 0.5)
+    rclt, rcls, Lhtail = 1.0, 1.0, 2.0e4
+    gammat, gammas, We, dyeinn = 0.5, 0.75, 1.0e4, 5.0
+    # lift weight of each mass state used below, from `masses`
+    W_lift_cruise, W_lift_MTO, W_lift_light = 5.0e5, 5.5e5, 3.2e5
+
+    evaluate(wing) = TASOPT.evaluate_wing_sizing_cases!(wing, masses, true, rclt, rcls, Lhtail,
+                                                        gammat, gammas, We, dyeinn)
+    # loads of a case computed directly: one inboard engine per wing, on a copy of the wing
+    direct_loads(wing, Nload, po) = wing_case_loads(Cantilever(), deepcopy(wing), po, gammat, gammas,
+                                                    Nload, We, 0, 0.0, 1, dyeinn)
+    maneuver_loads(wing, case, W_lift) = begin
+        Nload, po = wing_case_root_loading(case, wing, rclt, rcls, W_lift, Lhtail, 3.0)
+        direct_loads(wing, Nload, po)
+    end
+    section_loads(wing) = (wing.inboard.max_shear_load, wing.inboard.moment,
+                           wing.outboard.max_shear_load, wing.outboard.moment)
+    same_loads(a, b) = all(getfield(a, f) == getfield(b, f) for f in fieldnames(typeof(a)))
+
+    @testset "default: only the pull-up case" begin
+        wing = deepcopy(base_wing)
+        envelope = evaluate(wing)
+        sl = wing.sizing_loads
+        expected = maneuver_loads(wing, sl.pullup, W_lift_cruise)
+
+        @test Set(keys(sl.results)) == Set([:pullup])
+        @test same_loads(sl.results[:pullup], expected)
+        @test sl.governing_root == :pullup
+        @test sl.governing_break == :pullup
+        @test envelope == (S_root = abs(expected.S_root), M_root = abs(expected.M_root),
+                           S_break = abs(expected.S_break), M_break = abs(expected.M_break))
+        @test sl.pullup.n_computed == 3.0
+        @test section_loads(wing) == section_loads(base_wing)
+    end
+
+    @testset "maneuver and ground cases" begin
+        wing = deepcopy(base_wing)
+        sl = wing.sizing_loads
+        for name in (:pushover, :pullup_light, :pushover_light, :taxi)
+            getfield(sl, name).active = true
+        end
+        envelope = evaluate(wing)
+        active = (:pullup, :pushover, :pullup_light, :pushover_light, :taxi)
+
+        @test Set(keys(sl.results)) == Set(active)
+        @test same_loads(sl.results[:pullup], maneuver_loads(wing, sl.pullup, W_lift_cruise))
+        @test same_loads(sl.results[:pushover], maneuver_loads(wing, sl.pushover, W_lift_MTO))
+        @test same_loads(sl.results[:pullup_light], maneuver_loads(wing, sl.pullup_light, W_lift_light))
+        @test same_loads(sl.results[:pushover_light], maneuver_loads(wing, sl.pushover_light, W_lift_light))
+        @test same_loads(sl.results[:taxi], direct_loads(wing, -2.0, 0.0))
+        @test [getfield(sl, name).n_computed for name in active] == [3.0, -1.0, 3.0, -1.0, -2.0]
+        @test section_loads(wing) == section_loads(base_wing)
+
+        # the cases differ, so the governing cases are not trivially the first one
+        M_root = [abs(sl.results[name].M_root) for name in active]
+        M_break = [abs(sl.results[name].M_break) for name in active]
+        @test length(unique(M_root)) == length(active)
+        @test sl.governing_root == active[argmax(M_root)]
+        @test sl.governing_break == active[argmax(M_break)]
+        governing_root, governing_break = sl.results[sl.governing_root], sl.results[sl.governing_break]
+        @test envelope == (S_root = abs(governing_root.S_root), M_root = abs(governing_root.M_root),
+                           S_break = abs(governing_break.S_break), M_break = abs(governing_break.M_break))
+
+        # evaluating again gives the same results
+        results = deepcopy(sl.results)
+        @test evaluate(wing) == envelope
+        @test Set(keys(sl.results)) == Set(keys(results))
+        @test all(same_loads(sl.results[name], results[name]) for name in active)
+    end
+
+    @testset "active gust cases are skipped" begin
+        wing = deepcopy(base_wing)
+        sl = wing.sizing_loads
+        sl.gust_up_light.active = true
+        envelope = evaluate(wing)
+
+        @test Set(keys(sl.results)) == Set([:pullup])
+        @test sl.gust_up_light.n_computed == 0.0
+        @test envelope.M_root == abs(sl.results[:pullup].M_root)
+    end
+
+    @testset "stale results of inactive cases are removed" begin
+        wing = deepcopy(base_wing)
+        sl = wing.sizing_loads
+        sl.results[:taxi] = TASOPT.structures.WingCaseLoads(M_root = 1.0e12)
+        evaluate(wing)
+        @test Set(keys(sl.results)) == Set([:pullup])
+    end
+
+    @testset "no active case" begin
+        wing = deepcopy(base_wing)
+        sl = wing.sizing_loads
+        sl.pullup.active = false
+        sl.results[:pullup] = TASOPT.structures.WingCaseLoads(M_root = 1.0)
+        @test evaluate(wing) === nothing
+        @test isempty(sl.results)
+    end
+end
+
+# Mass inputs of the wing sizing cases, from the aircraft weights of a sizing iteration
+
+@testset "wing sizing case masses" verbose=true begin
+    # 1.7e5 = W_pay - W_paymax + W_fuel is the fuel that fits at MTOW with maximum payload
+    sizing_masses(; W_fuel_cap = 3.0e5, has_wing_fuel = true) = TASOPT.wing_sizing_masses(;
+        W_cruise = 9.0e5, W_MTO = 1.0e6, W_pay = 1.5e5, W_paymax = 2.0e5, W_fuel = 2.2e5,
+        freserve = 0.1, W_fuel_cap, has_wing_fuel)
+
+    @testset "fuel in the wing" begin
+        m = sizing_masses()
+        @test m.W_cruise == 9.0e5
+        @test m.W_MTO == 1.0e6
+        @test m.W_fuel == 2.2e5
+        @test m.W_fuel_cap == 3.0e5
+        @test m.W_reserve ≈ 2.0e4
+        @test m.W_empty ≈ 6.3e5
+        @test m.W_fuel_at_MTO ≈ 1.7e5
+        @test m.r_fuel_design ≈ 1.7e5 / 3.0e5
+    end
+
+    @testset "the tank capacity caps the fuel at MTOW" begin
+        m = sizing_masses(W_fuel_cap = 1.0e5)
+        @test m.W_fuel_at_MTO == 1.0e5
+        @test m.r_fuel_design ≈ 1.7
+    end
+
+    @testset "fuel in the fuselage" begin
+        m = sizing_masses(W_fuel_cap = 0.0, has_wing_fuel = false)
+        @test m.W_fuel_at_MTO ≈ 1.7e5
+        @test m.r_fuel_design == 0.0
+        @test m.W_fuel_cap == 0.0
+        @test all(isfinite, values(m))
+    end
+end
+
+# Sizing records the load cases of the wing
+
+@testset "sized wing records the sizing cases" verbose=true begin
+    # The recorded case loads use the panel weights of the previous sizing iteration, so they
+    # equal the loads of the sized wing only to the convergence tolerance.
+    function test_recorded_pullup(ac)
+        sl = ac.wing.sizing_loads
+        @test Set(keys(sl.results)) == Set([:pullup])
+        @test sl.governing_root == :pullup
+        @test sl.governing_break == :pullup
+        @test sl.pullup.n_computed == 3.0
+        pullup = sl.results[:pullup]
+        @test abs(pullup.M_root) ≈ abs(ac.wing.inboard.moment) rtol = 1e-3
+        @test abs(pullup.M_break) ≈ abs(ac.wing.outboard.moment) rtol = 1e-3
+        @test abs(pullup.S_root) ≈ abs(ac.wing.inboard.max_shear_load) rtol = 1e-3
+        @test abs(pullup.S_break) ≈ abs(ac.wing.outboard.max_shear_load) rtol = 1e-3
+    end
+
+    @testset "fuel in the wing" begin
+        ac = CoreLogging.with_logger(CoreLogging.NullLogger()) do
+            ac = load_default_model()
+            size_aircraft!(ac, printiter = false)
+            ac
+        end
+        test_recorded_pullup(ac)
+    end
+
+    @testset "fuel in the fuselage" begin
+        ac = CoreLogging.with_logger(CoreLogging.NullLogger()) do
+            ac = read_aircraft_model(joinpath(TASOPT.__TASOPTroot__, "../example/cryo_input.toml"))
+            size_aircraft!(ac, iter = 50, printiter = false)
+            ac
+        end
+        test_recorded_pullup(ac)
+    end
+end
+
+# On a cantilever wing the pull-up governs, so the extra cases must not change the sized wing
+
+@testset "extra sizing cases on a cantilever wing" verbose=true begin
+    extra_cases = (:pushover, :pullup_light, :pushover_light, :taxi)
+
+    function size_with(load_model; extra)
+        CoreLogging.with_logger(CoreLogging.NullLogger()) do
+            ac = load_model()
+            if extra
+                for name in extra_cases
+                    getfield(ac.wing.sizing_loads, name).active = true
+                end
+            end
+            size_aircraft!(ac, iter = 50, printiter = false)
+            ac
+        end
+    end
+
+    function test_extra_cases_do_not_govern(load_model)
+        base = size_with(load_model; extra = false)
+        extra = size_with(load_model; extra = true)
+        sl = extra.wing.sizing_loads
+        @test Set(keys(sl.results)) == Set((:pullup, extra_cases...))
+        @test sl.governing_root == :pullup
+        @test sl.governing_break == :pullup
+        @test extra.wing.weight == base.wing.weight
+        @test extra.parg[igWMTO] == base.parg[igWMTO]
+    end
+
+    @testset "fuel in the wing" begin
+        test_extra_cases_do_not_govern(load_default_model)
+    end
+
+    @testset "fuel in the fuselage" begin
+        test_extra_cases_do_not_govern(() ->
+            read_aircraft_model(joinpath(TASOPT.__TASOPTroot__, "../example/cryo_input.toml")))
+    end
+end
