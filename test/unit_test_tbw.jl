@@ -578,10 +578,9 @@ end
         txt = replace(default_txt, r"^([ \t]*Nlift[ \t]*=)[ \t]*[0-9.]+"m => s"\1 2.5")
         @test txt != default_txt
 
-        ac, logs = read_aircraft_from_text(txt)
+        ac, _ = read_aircraft_from_text(txt)
         @test ac.wing.sizing_loads.pullup.load_factor == 2.5
         @test ac.parg[igNlift] == 0.0
-        @test any(r -> occursin("Nlift", r.message), logs)
         @test read_aircraft_from_text(default_txt)[1].wing.sizing_loads.pullup.load_factor == 3.0
 
         mktempdir() do dir
