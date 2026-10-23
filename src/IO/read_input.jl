@@ -1255,6 +1255,8 @@ else
     error("Unrecognized wing move option: $opt_move_wing")
 end
 
+_opt_wing_config = wing.has_strut ? WingConfig.StrutBraced : WingConfig.Cantilever
+
 #create options object
 ac_options = TASOPT.Options(
     opt_fuel = _opt_fuel,
@@ -1270,6 +1272,7 @@ ac_options = TASOPT.Options(
     is_doubledecker = is_doubledecker,
 
     opt_move_wing = _opt_move_wing,
+    opt_wing_config = _opt_wing_config,
 
     trefftz_config = TREFFTZ_CONFIG
 )
