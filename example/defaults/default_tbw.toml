@@ -244,15 +244,15 @@
 
 [Wing.Strut]
     #Only used if `wing_config` is not "cantilever"
-    z_fuselage_attach    = "120 in" # TBW: vertical distance from the wing box to the strut fuselage attachment, on the lower fuselage
-    y_fuselage_attach    = "0.0 m" # strut y position at the fuselage attachment
-    thickness_to_chord   = 0.15 # strut thickness to chord
-    local_velocity_ratio = 1.0 # V_strut/V_freestream
-    wall_to_depth        = 0.05 # strut box wall thickness to depth ratio
-    box_width_to_chord   = 0.5 # strut box width to chord ratio
-    web_to_box_height    = 0.75 # strut box web height to box height ratio
-    end_fixity_K         = 1.0 # Euler effective-length factor of the strut end fixity
-    weight_frac_added    = 0.60 # added weight fraction for fairings and fittings
+    z_fuselage_attach       = "120 in" # TBW: vertical distance from the wing box to the strut fuselage attachment, on the lower fuselage
+    y_fuselage_attach       = "0.0 m" # strut y position at the fuselage attachment
+    thickness_to_chord      = 0.15 # strut thickness to chord
+    local_velocity_ratio    = 1.0 # V_strut/V_freestream
+    wall_thickness_to_depth = 0.05 # strut box wall thickness to depth ratio
+    box_width_to_chord      = 0.5 # strut box width to chord ratio
+    web_to_box_height       = 0.75 # strut box web height to box height ratio
+    end_fixity_K            = 1.0 # Euler effective-length factor of the strut end fixity
+    weight_frac_added       = 0.60 # added weight fraction for fairings and fittings
 
 [Wing.Aero]
     fuselage_lift_carryover_loss_factor = -0.3
