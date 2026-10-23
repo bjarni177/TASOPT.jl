@@ -176,8 +176,10 @@ function wing_weights!(wing, po, gammat, gammas,
         lsp = sqrt(wing.strut.z^2 + (0.5*wing.layout.span*(etas-etao)/cosL)^2)
         Tstrutp = Tstrut*lsp/ls
         wing.strut.cos_lambda = ls/lsp
-        wing.strut.axial_force = Tstrutp/sigstrut
-        wing.strut.weight   = 2.0*wing.strut.material.ρ*gee*wing.strut.axial_force*lsp
+        wing.strut.axial_force = Tstrutp
+        wing.strut.area = Tstrutp/sigstrut
+        wing.strut.length = lsp
+        wing.strut.weight   = 2.0*wing.strut.material.ρ*gee*wing.strut.area*lsp
         wing.strut.dxW = wing.strut.weight * 0.25*wing.layout.span*(etas-etao) * sinL/cosL
     end
 
