@@ -171,7 +171,7 @@ parm[imWpay, :] .= payload
 parg[igWpaymax] = maxpay 
 parg[igfreserve] = readmis("fuel_reserves")
 parg[igVne] = Speed(readmis("Vne"))
-parg[igNlift] = readmis("Nlift")
+wing.sizing_loads.pullup.load_factor = readmis("Nlift")
 
 # Setup option variables
 options = read_input("Options", data, default)

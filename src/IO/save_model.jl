@@ -79,7 +79,7 @@ function save_aircraft_model(ac::TASOPT.aircraft=TASOPT.read_aircraft_model(),
         d_miss["max_pax"] = parg[igWpaymax] ./ parm[imWperpax, :]
         d_miss["fuel_reserves"] = parg[igfreserve]
         d_miss["Vne"] = parg[igVne]
-        d_miss["Nlift"] = parg[igNlift]
+        d_miss["Nlift"] = wing.sizing_loads.pullup.load_factor
 
     # mission: Takeoff
     d_to = Dict()

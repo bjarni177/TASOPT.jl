@@ -572,4 +572,34 @@ end
         @test ac.wing.sizing_loads.pullup.active
         @test count(n -> getfield(ac.wing.sizing_loads, n).active, case_names) == 1
     end
+
+    @testset "Mission.Nlift sets the pull-up load factor" begin
+        default_txt = read(joinpath(TASOPT.__TASOPTroot__, "../example/defaults/default_input.toml"), String)
+        txt = replace(default_txt, r"^([ \t]*Nlift[ \t]*=)[ \t]*[0-9.]+"m => s"\1 2.5")
+        @test txt != default_txt
+
+        ac, logs = read_aircraft_from_text(txt)
+        @test ac.wing.sizing_loads.pullup.load_factor == 2.5
+        @test ac.parg[igNlift] == 0.0
+        @test any(r -> occursin("Nlift", r.message), logs)
+        @test read_aircraft_from_text(default_txt)[1].wing.sizing_loads.pullup.load_factor == 3.0
+
+        mktempdir() do dir
+            path = joinpath(dir, "nlift_roundtrip.toml")
+            save_aircraft_model(ac, path)
+            @test TASOPT.TOML.parsefile(path)["Mission"]["Nlift"] == 2.5
+            ac_reread, _ = read_aircraft_from_text(read(path, String))
+            @test ac_reread.wing.sizing_loads.pullup.load_factor == 2.5
+        end
+    end
+
+    @testset "sizing responds to the pull-up load factor" begin
+        quiet_sized_wing_weight(load_factor) = CoreLogging.with_logger(CoreLogging.NullLogger()) do
+            ac = load_default_model()
+            ac.wing.sizing_loads.pullup.load_factor = load_factor
+            size_aircraft!(ac, printiter = false)
+            ac.wing.weight
+        end
+        @test quiet_sized_wing_weight(2.5) < quiet_sized_wing_weight(3.0)
+    end
 end

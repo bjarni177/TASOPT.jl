@@ -97,7 +97,7 @@ function _size_aircraft!(ac; itermax=35,
 
 
     # Load factors and dynamic pressure
-    Nlift = parg[igNlift]
+    Nlift = wing.sizing_loads.pullup.load_factor
     Nland = parg[igNland]
     Vne = parg[igVne]
     qne = 0.5 * ρSL * Vne^2
