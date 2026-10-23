@@ -50,6 +50,7 @@ function save_aircraft_model(ac::TASOPT.aircraft=TASOPT.read_aircraft_model(),
     d_opt = Dict()
         d_opt["prop_sys_arch"] = string(options.opt_prop_sys_arch)
         d_opt["engine_location"] = string(options.opt_engine_location)
+        d_opt["wing_config"] = string(options.opt_wing_config)
     d_out["Options"] = d_opt
     #--end options----------------
 
@@ -200,8 +201,6 @@ function save_aircraft_model(ac::TASOPT.aircraft=TASOPT.read_aircraft_model(),
 
     #Wing ------------------------
     d_wing = Dict()
-        d_wing["has_strut"] = wing.has_strut
-
         d_wing["sweep"] = wing.layout.sweep
         d_wing["AR"] = wing.layout.AR
         d_wing["maxSpan"] = wing.layout.max_span
@@ -220,8 +219,8 @@ function save_aircraft_model(ac::TASOPT.aircraft=TASOPT.read_aircraft_model(),
         d_wing["x_wing_box"] = wing.layout.box_x
         d_wing["z_wing"] = wing.layout.z
 
-    # Strut details (only used if has_strut is True)
-        if d_wing["has_strut"]
+    # Strut details (only used if the wing is braced)
+        if options.has_strut
             d_wing["z_strut"] = wing.strut.z
             d_wing["strut_toc"] = wing.strut.thickness_to_chord
             d_wing["strut_local_velocity_ratio"] = wing.strut.local_velocity_ratio
