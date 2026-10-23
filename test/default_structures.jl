@@ -171,6 +171,7 @@ wing.tip_lift_loss = -0.05000000000000000278
 wing.inboard.co = 6.24686860805536525731 
 wing.outboard.co = 4.37280802563875514721 
 wing.mean_aero_chord = 4.26745706387547851790 
+wing.sizing_loads.pullup.n_computed = 3.00000000000000000000 
 # ------------------------------
 # Htail
 # ------------------------------
