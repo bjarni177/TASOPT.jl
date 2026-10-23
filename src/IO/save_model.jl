@@ -221,9 +221,17 @@ function save_aircraft_model(ac::TASOPT.aircraft=TASOPT.read_aircraft_model(),
 
     # Strut details (only used if the wing is braced)
         if options.has_strut
-            d_wing["z_strut"] = wing.strut.z
-            d_wing["strut_toc"] = wing.strut.thickness_to_chord
-            d_wing["strut_local_velocity_ratio"] = wing.strut.local_velocity_ratio
+            d_wing_strut = Dict()
+                d_wing_strut["z_fuselage_attach"] = wing.strut.z
+                d_wing_strut["y_fuselage_attach"] = wing.strut.y_root
+                d_wing_strut["thickness_to_chord"] = wing.strut.thickness_to_chord
+                d_wing_strut["local_velocity_ratio"] = wing.strut.local_velocity_ratio
+                d_wing_strut["wall_to_depth"] = wing.strut.wall_to_depth
+                d_wing_strut["box_width_to_chord"] = wing.strut.box_width_to_chord
+                d_wing_strut["web_to_box_height"] = wing.strut.web_to_box_height
+                d_wing_strut["end_fixity_K"] = wing.strut.end_fixity_K
+                d_wing_strut["weight_frac_added"] = wing.strut.weight_frac_added
+            d_wing["Strut"] = d_wing_strut
         end
 
     #Aero , for multiple segments
