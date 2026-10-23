@@ -77,7 +77,6 @@ function _size_aircraft!(ac; itermax=35,
     parg[igWpay] = Wpay
 
     # Extract weight fractions and factors
-    fwadd = wing_additional_weight(wing) # not used anymore: the panel-inertia update that used it now lives in wing_weights!
     flgnose = landing_gear.nose_gear.overall_mass_fraction
     flgmain = landing_gear.main_gear.overall_mass_fraction
     fLo =  wing.fuse_lift_carryover
