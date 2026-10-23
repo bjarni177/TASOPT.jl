@@ -202,6 +202,25 @@ TREFFTZ_CONFIG = aerodynamics.get_trefftz_config(trefftz_resolution_str;
                                                   wing_root_contraction=wing_root_contraction,
                                                   tail_root_contraction=tail_root_contraction)
 
+# Wing bracing configuration. The legacy [Wing] has_strut key is only honored if the user file sets it
+legacy_has_strut = get(get(data, "Wing", Dict()), "has_strut", nothing)
+if haskey(options, "wing_config") || isnothing(legacy_has_strut)
+    wing_config_str = read_input("wing_config", options, doptions)
+    if compare_strings(wing_config_str, "cantilever")
+        _opt_wing_config = WingConfig.Cantilever
+    elseif compare_strings(wing_config_str, "strut_braced")
+        _opt_wing_config = WingConfig.StrutBraced
+    elseif compare_strings(wing_config_str, "truss_braced")
+        _opt_wing_config = WingConfig.TrussBraced
+    else
+        error("Unrecognized wing configuration: $wing_config_str")
+    end
+else
+    @info "The [Wing] key \"has_strut\" is deprecated; use `wing_config` in [Options] " *
+          "(\"cantilever\", \"strut_braced\" or \"truss_braced\") instead."
+    _opt_wing_config = legacy_has_strut ? WingConfig.StrutBraced : WingConfig.Cantilever
+end
+
 
 # Fuel related options
 fuel = read_input("Fuel", data, default)
@@ -535,7 +554,6 @@ end #if
 wing_i = read_input("Wing", data, default)
 dwing = default["Wing"]
 readwing(x) = read_input(x, wing_i, dwing)
-    wing.has_strut = readwing("has_strut")
 
     wing.layout.sweep = readwing("sweep")
     wing.layout.AR = readwing("AR")
@@ -570,8 +588,8 @@ readwing(x) = read_input(x, wing_i, dwing)
 
     parg[igdxeng2wbox] = wing.layout.box_x - parg[igxeng] #TODO add this as a function of wing
 
-    ## Strut details only used if has_strut is true
-    if wing.has_strut
+    ## Strut details only used if the wing is braced
+    if _opt_wing_config != WingConfig.Cantilever
         wing.strut.z  = Distance(readwing("z_strut"))
         wing.strut.thickness_to_chord  = readwing("strut_toc")
         wing.strut.local_velocity_ratio = readwing("strut_local_velocity_ratio")
@@ -1254,8 +1272,6 @@ elseif compare_strings(opt_move_wing, "min_static_margin")
 else
     error("Unrecognized wing move option: $opt_move_wing")
 end
-
-_opt_wing_config = wing.has_strut ? WingConfig.StrutBraced : WingConfig.Cantilever
 
 #create options object
 ac_options = TASOPT.Options(
