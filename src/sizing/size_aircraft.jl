@@ -389,7 +389,7 @@ function _size_aircraft!(ac; itermax=35,
 
         # Calculate strut properties
         if options.has_strut
-            cstrut = sqrt(0.5 * wing.strut.area / (wing.strut.wall_to_depth * wing.strut.thickness_to_chord))
+            cstrut = sqrt(0.5 * wing.strut.area / (wing.strut.wall_thickness_to_depth * wing.strut.thickness_to_chord))
             wing.strut.chord = cstrut
             wing.strut.S = 2.0 * cstrut * lstrutp
         end

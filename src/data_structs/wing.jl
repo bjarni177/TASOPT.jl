@@ -22,7 +22,7 @@ $TYPEDFIELDS
     """Strut thickness to chord"""
     thickness_to_chord::Float64 = 0
     """Strut box wall thickness to depth ratio"""
-    wall_to_depth::Float64 = 0.05
+    wall_thickness_to_depth::Float64 = 0.05
     """Strut box width to chord ratio"""
     box_width_to_chord::Float64 = 0.5
     """Strut box web height to box height ratio"""

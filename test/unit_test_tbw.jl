@@ -165,7 +165,7 @@ const strut_block_fields = (
     y_fuselage_attach = :y_root,
     thickness_to_chord = :thickness_to_chord,
     local_velocity_ratio = :local_velocity_ratio,
-    wall_to_depth = :wall_to_depth,
+    wall_thickness_to_depth = :wall_thickness_to_depth,
     box_width_to_chord = :box_width_to_chord,
     web_to_box_height = :web_to_box_height,
     end_fixity_K = :end_fixity_K,
@@ -185,7 +185,7 @@ const custom_strut_block = """
     y_fuselage_attach = "1.5 ft"
     thickness_to_chord = 0.12
     local_velocity_ratio = 1.1
-    wall_to_depth = 0.07
+    wall_thickness_to_depth = 0.07
     box_width_to_chord = 0.45
     web_to_box_height = 0.7
     end_fixity_K = 0.8
@@ -215,7 +215,7 @@ mentions_legacy_strut_key(log, key) = log.level == CoreLogging.Info && occursin(
         y_fuselage_attach = TASOPT.Distance("1.5 ft"),
         thickness_to_chord = 0.12,
         local_velocity_ratio = 1.1,
-        wall_to_depth = 0.07,
+        wall_thickness_to_depth = 0.07,
         box_width_to_chord = 0.45,
         web_to_box_height = 0.7,
         end_fixity_K = 0.8,
@@ -265,7 +265,7 @@ mentions_legacy_strut_key(log, key) = log.level == CoreLogging.Info && occursin(
         @test strut.z ≈ 154 * 0.0254
         @test strut.thickness_to_chord == 0.15
         @test strut.local_velocity_ratio == 1.0
-        @test strut.wall_to_depth == 0.05
+        @test strut.wall_thickness_to_depth == 0.05
         @test strut.box_width_to_chord == 0.5
         @test strut.web_to_box_height == 0.75
         @test strut.end_fixity_K == 1.0
@@ -341,7 +341,7 @@ end
         @testset "strut inputs are physically sensible" begin
             @test 0 < wing.strut.thickness_to_chord < 1
             @test wing.strut.local_velocity_ratio > 0
-            @test 0 < wing.strut.wall_to_depth < 1
+            @test 0 < wing.strut.wall_thickness_to_depth < 1
             @test 0 < wing.strut.web_to_box_height < 1
             @test wing.strut.end_fixity_K > 0
         end
@@ -386,7 +386,7 @@ end
         default_strut = TASOPT.structures.Strut()
         @test default_strut.material.name == "TASOPT-Al"
         @test default_strut.y_root == 0
-        @test default_strut.wall_to_depth == 0.05
+        @test default_strut.wall_thickness_to_depth == 0.05
         @test default_strut.box_width_to_chord == 0.5
         @test default_strut.web_to_box_height == 0.75
         @test default_strut.end_fixity_K == 1.0
@@ -439,12 +439,12 @@ end
         @test strut.S ≈ 2 * strut.chord * strut.length rtol=1e-10
     end
 
-    @testset "wall_to_depth sets the strut chord" begin
-        @test strut.wall_to_depth == 0.05
+    @testset "wall_thickness_to_depth sets the strut chord" begin
+        @test strut.wall_thickness_to_depth == 0.05
         @test strut.chord ≈ sqrt(0.5 * strut.area / (0.05 * strut.thickness_to_chord)) rtol=1e-10
 
         ac_thicker = read_strut_aircraft()
-        ac_thicker.wing.strut.wall_to_depth = 0.08
+        ac_thicker.wing.strut.wall_thickness_to_depth = 0.08
         size_aircraft!(ac_thicker, printiter = false)
         strut_thicker = ac_thicker.wing.strut
         @test strut_thicker.chord ≈ sqrt(0.5 * strut_thicker.area / (0.08 * strut_thicker.thickness_to_chord)) rtol=1e-10
