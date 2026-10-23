@@ -81,6 +81,45 @@ inboard panel weights; see [`wing_section_loads`](@ref).
 struct Cantilever end
 
 """
+    outboard_section_loads!(wing, po, gammat, gammas, Nload, We, neout, dyeout)
+
+Sets the outboard section shear and bending moment at the wing break (strut attachment point), from the
+outer-wing lift distribution, the tip roll-off lift loss, the outboard panel weight and any outboard engines.
+
+!!! details "🔃 Inputs and Outputs"
+    **Inputs:**
+    - `wing::TASOPT.structures.Wing`: Wing structure.
+    - `po::Float64`: Wing root loading magnitude.
+    - `gammat::Float64`: Wing outer section taper ratio.
+    - `gammas::Float64`: Wing inner section taper ratio.
+    - `Nload::Int`: Max vertical load factor for wing bending loads.
+    - `We::Float64`: Weight of one engine [N].
+    - `neout::Int`: Number of engines per wing mounted outboard of the wing break.
+    - `dyeout::Float64`: Average spanwise moment arm of the outboard engines about the wing break station ηs [m].
+
+    **Outputs:**
+    - `wing.outboard.max_shear_load` and `wing.outboard.moment` are updated in place.
+"""
+function outboard_section_loads!(wing, po, gammat, gammas, Nload, We, neout, dyeout)
+    etas = wing.layout.ηs
+
+    # Tip roll off Lift (modeled as a point load) and it's moment about ηs
+    dLt = wing.tip_lift_loss * po * wing.layout.root_chord * gammat * wing.outboard.λ
+    dMt = dLt * 0.5 * wing.layout.span * (1.0 - etas)
+
+    # Outboard section:
+    #---- strut-attach shear,moment from outer-wing loading. 
+    #     Note added term to account for any outboard engines.
+    #     If neout = 0 this simplifies to Drela's version which assumes engine
+    #     fixed at ηs locations only.
+    wing.outboard.max_shear_load = (po * wing.layout.span / 4.0) * (gammas + gammat) * (1.0 - etas) +
+                                   dLt - Nload * wing.outboard.weight - Nload * neout * We
+    wing.outboard.moment = (po * wing.layout.span^2 / 24.0) * (gammas + 2.0 * gammat) * (1.0 - etas)^2 +
+                           dMt - Nload * wing.outboard.dyW - Nload * neout * We * dyeout
+    return nothing
+end # outboard_section_loads!
+
+"""
     wing_section_loads(::Cantilever, wing, po, gammas, Nload, We, neinn, dyeinn)
 
 Sets the inboard section shear and bending moment of a wing without a strut, from the outboard
@@ -121,8 +160,224 @@ function wing_section_loads(::Cantilever, wing, po, gammas, Nload, We, neinn, dy
 end # wing_section_loads
 
 """
+    wing_case_loads(::Cantilever, wing, po, gammat, gammas, Nload, We, neout, dyeout, neinn, dyeinn)
+
+Returns the root and break shear and bending moment of a wing without a strut for one load case, as a
+[`WingCaseLoads`](@ref). The outboard loads follow from [`outboard_section_loads!`](@ref) and the inboard
+loads from [`wing_section_loads`](@ref).
+
+This function sizes nothing, but it mutates the section load fields of the `wing` passed in
+(`wing.outboard.max_shear_load`, `wing.outboard.moment`, `wing.inboard.max_shear_load` and
+`wing.inboard.moment`); pass a copy to keep the wing loads unchanged.
+
+!!! details "🔃 Inputs and Outputs"
+    **Inputs:**
+    - `wing::TASOPT.structures.Wing`: Wing structure, with the panel weights of the load case.
+    - `po::Float64`: Wing root loading magnitude.
+    - `gammat::Float64`: Wing outer section taper ratio.
+    - `gammas::Float64`: Wing inner section taper ratio.
+    - `Nload::Int`: Max vertical load factor for wing bending loads.
+    - `We::Float64`: Weight of one engine [N].
+    - `neout::Int`: Number of engines per wing mounted outboard of the wing break.
+    - `dyeout::Float64`: Average spanwise moment arm of the outboard engines about the wing break station ηs [m].
+    - `neinn::Int`: Number of engines per wing mounted at or inboard of the wing break.
+    - `dyeinn::Float64`: Average spanwise moment arm of the inboard engines about the wing root station ηo [m].
+
+    **Outputs:**
+    - `WingCaseLoads`: Shear and moment at the wing root and at the wing break.
+"""
+function wing_case_loads(::Cantilever, wing, po, gammat, gammas, Nload, We, neout, dyeout, neinn, dyeinn)
+    outboard_section_loads!(wing, po, gammat, gammas, Nload, We, neout, dyeout)
+    wing_section_loads(Cantilever(), wing, po, gammas, Nload, We, neinn, dyeinn)
+    return WingCaseLoads(S_root = wing.inboard.max_shear_load, M_root = wing.inboard.moment,
+                         S_break = wing.outboard.max_shear_load, M_break = wing.outboard.moment)
+end # wing_case_loads
+
+"""
+    wing_case_root_loading(case, wing, rclt, rcls, W_lift, Lhtail, n_pullup)
+
+Returns the load factor and the wing root loading magnitude of one wing sizing load case.
+
+A `Maneuver` case uses the load factor of the case and a tail load of
+`case.tail_load_scale * (load factor / n_pullup) * Lhtail`, and its root loading follows from
+[`wing_loading`](@ref). A `Ground` case has the load factor of the case and no wing lift. `Gust` cases
+are not supported yet and throw an `ArgumentError`.
+
+!!! details "🔃 Inputs and Outputs"
+    **Inputs:**
+    - `case::WingLoadCase`: Wing sizing load case.
+    - `wing::TASOPT.structures.Wing`: Wing structure.
+    - `rclt::Float64`: Tip/root cl ratio (clt/clo).
+    - `rcls::Float64`: Break/root cl ratio (cls/clo).
+    - `W_lift::Float64`: Aircraft weight carried by the wing lift in the case [N].
+    - `Lhtail::Float64`: Worst-case (most negative) tail lift at the pull-up load factor [N].
+    - `n_pullup::Float64`: Pull-up load factor that `Lhtail` belongs to.
+
+    **Outputs:**
+    - `(Nload, po)`: Load factor for wing bending loads and wing root loading magnitude.
+"""
+function wing_case_root_loading(case, wing, rclt, rcls, W_lift, Lhtail, n_pullup)
+    if case.kind == WingLoadKind.Maneuver
+        n = case.load_factor
+        Lh = case.tail_load_scale * (n / n_pullup) * Lhtail
+        return (Nload = n, po = wing_loading(wing, rclt, rcls, n, W_lift, Lh))
+    elseif case.kind == WingLoadKind.Ground
+        return (Nload = case.load_factor, po = 0.0)
+    else
+        throw(ArgumentError("gust sizing cases are not supported yet"))
+    end
+end # wing_case_root_loading
+
+"""
+    wing_sizing_masses(; W_cruise, W_MTO, W_pay, W_paymax, W_fuel, freserve, W_fuel_cap, has_wing_fuel)
+
+Returns the weights that [`evaluate_wing_sizing_cases!`](@ref) passes to [`wing_mass_state`](@ref), from the
+aircraft weights of a sizing iteration. The reserve, empty and fuel-at-MTO weights are simple estimates:
+- `W_reserve = W_fuel * freserve / (1 + freserve)`: `freserve` is the reserve fuel over the burned fuel, and
+  `W_fuel` includes the reserve.
+- `W_empty = W_MTO - W_pay - W_fuel`: the operating empty weight, without payload and fuel.
+- `W_fuel_at_MTO = W_pay - W_paymax + W_fuel`: the fuel that fits at the maximum takeoff weight with the
+  maximum payload, capped at `W_fuel_cap` if the fuel is stored in the wing.
+- `r_fuel_design`: the same fuel weight over `W_fuel_cap` (zero if the fuel is not stored in the wing). It is
+  not capped at one.
+
+!!! details "🔃 Inputs and Outputs"
+    **Inputs:**
+    - `W_cruise::Float64`: Aircraft weight at the design cruise point [N].
+    - `W_MTO::Float64`: Maximum takeoff weight [N].
+    - `W_pay::Float64`: Design payload weight [N].
+    - `W_paymax::Float64`: Maximum payload weight [N].
+    - `W_fuel::Float64`: Design mission fuel weight, including the reserve [N].
+    - `freserve::Float64`: Reserve fuel as a fraction of the burned fuel.
+    - `W_fuel_cap::Float64`: Fuel weight that fills the wing tanks [N].
+    - `has_wing_fuel::Bool`: Whether fuel is stored in the wing.
+
+    **Outputs:**
+    - `masses::NamedTuple`: `W_cruise`, `W_MTO`, `W_fuel`, `W_reserve`, `W_empty`, `W_fuel_cap`, `W_fuel_at_MTO`
+      and `r_fuel_design`, as defined above [N, except `r_fuel_design`].
+"""
+function wing_sizing_masses(; W_cruise, W_MTO, W_pay, W_paymax, W_fuel, freserve, W_fuel_cap, has_wing_fuel)
+    W_fuel_design_MTO = W_pay - W_paymax + W_fuel
+    return (W_cruise = W_cruise,
+            W_MTO = W_MTO,
+            W_fuel = W_fuel,
+            W_reserve = W_fuel * freserve / (1 + freserve),
+            W_empty = W_MTO - W_pay - W_fuel,
+            W_fuel_cap = W_fuel_cap,
+            W_fuel_at_MTO = has_wing_fuel ? min(W_fuel_cap, W_fuel_design_MTO) : W_fuel_design_MTO,
+            r_fuel_design = (has_wing_fuel && W_fuel_cap > 0) ? W_fuel_design_MTO / W_fuel_cap : 0.0)
+end # wing_sizing_masses
+
+"""
+    evaluate_wing_sizing_cases!(wing, masses, has_wing_fuel, rclt, rcls, Lhtail, gammat, gammas, We, dyeinn)
+
+Computes the root and break loads of every active wing sizing load case of a wing without a strut and
+returns their envelope. The loads of each case are stored in `wing.sizing_loads.results`, the load factor
+of the case in its `n_computed`, and the cases with the largest root and break bending moment in
+`wing.sizing_loads.governing_root` and `wing.sizing_loads.governing_break`.
+
+Active gust cases are skipped. The wing has one engine per wing at the inboard side. The section loads
+of the `wing` are not modified.
+
+!!! details "🔃 Inputs and Outputs"
+    **Inputs:**
+    - `wing::TASOPT.structures.Wing`: Wing structure, with the panel weights of the design cruise mass state.
+    - `masses::NamedTuple`: Weights for [`wing_mass_state`](@ref): `W_cruise`, `W_MTO`, `W_fuel`, `W_reserve`,
+      `W_empty`, `W_fuel_cap`, `W_fuel_at_MTO` and `r_fuel_design`.
+    - `has_wing_fuel::Bool`: Whether fuel is stored in the wing.
+    - `rclt::Float64`: Tip/root cl ratio (clt/clo).
+    - `rcls::Float64`: Break/root cl ratio (cls/clo).
+    - `Lhtail::Float64`: Worst-case (most negative) tail lift at the pull-up load factor [N].
+    - `gammat::Float64`: Wing outer section taper ratio.
+    - `gammas::Float64`: Wing inner section taper ratio.
+    - `We::Float64`: Weight of one engine [N].
+    - `dyeinn::Float64`: Average spanwise moment arm of the inboard engine about the wing root station ηo [m].
+
+    **Outputs:**
+    - `(S_root, M_root, S_break, M_break)`: Largest magnitude of the shear and bending moment at the wing root
+      and at the wing break, each from its governing case, or `nothing` if no case was evaluated.
+"""
+function evaluate_wing_sizing_cases!(wing, masses, has_wing_fuel, rclt, rcls, Lhtail, gammat, gammas, We, dyeinn)
+    sl = wing.sizing_loads
+    n_pullup = sl.pullup.load_factor
+    empty!(sl.results)
+
+    # Limitation: every case uses the panel weights and inertia stored in the wing (design cruise mass
+    # state). Only the lift weight, the load factor and the tail load follow the mass state of the case.
+    # Per-case panel inertia, from the structural and fuel weights of each mass state, is not implemented yet.
+    for name in fieldnames(WingSizingLoads)
+        case = getfield(sl, name)
+        case isa WingLoadCase || continue
+        (case.active && case.kind != WingLoadKind.Gust) || continue
+
+        ms = wing_mass_state(case.mass_state, has_wing_fuel; masses...)
+        (Nload, po) = wing_case_root_loading(case, wing, rclt, rcls, ms.W_lift, Lhtail, n_pullup)
+        case.n_computed = Nload
+        sl.results[name] = wing_case_loads(Cantilever(), deepcopy(wing), po, gammat, gammas, Nload, We, 0, 0.0, 1, dyeinn)
+    end
+    isempty(sl.results) && return nothing
+
+    # first case in declaration order wins ties
+    names = [name for name in fieldnames(WingSizingLoads) if haskey(sl.results, name)]
+    sl.governing_root = names[argmax([abs(sl.results[name].M_root) for name in names])]
+    sl.governing_break = names[argmax([abs(sl.results[name].M_break) for name in names])]
+
+    root, brk = sl.results[sl.governing_root], sl.results[sl.governing_break]
+    return (S_root = abs(root.S_root), M_root = abs(root.M_root),
+            S_break = abs(brk.S_break), M_break = abs(brk.M_break))
+end # evaluate_wing_sizing_cases!
+
+"""
+    wing_mass_state(mass_state, has_wing_fuel; W_cruise, W_MTO, W_fuel, W_reserve, W_empty,
+        W_fuel_cap, W_fuel_at_MTO, r_fuel_design)
+
+Returns the lift weight and the fuel split of a wing mass state: the weight the wing lifts, the fuel
+carried in the wing as a fraction of the wing tank capacity, and the fuel carried in the fuselage.
+
+!!! details "🔃 Inputs and Outputs"
+    **Inputs:**
+    - `mass_state::WingMassState.T`: Mass state (`DesignCruise`, `MTOW_MaxFuel`, `MZFW` or `Light`).
+    - `has_wing_fuel::Bool`: Whether fuel is stored in the wing. If `false`, the wing fuel fraction is zero
+      and `W_fuel_cap` is not used; if `true`, all fuel is in the wing and the fuselage fuel weight is zero.
+    - `W_cruise::Float64`: Aircraft weight at the design cruise point [N].
+    - `W_MTO::Float64`: Maximum takeoff weight [N].
+    - `W_fuel::Float64`: Design mission fuel weight [N].
+    - `W_reserve::Float64`: Reserve fuel weight [N].
+    - `W_empty::Float64`: Operating empty weight, without fuel [N].
+    - `W_fuel_cap::Float64`: Fuel weight that fills the wing tanks [N].
+    - `W_fuel_at_MTO::Float64`: Fuel weight on board at maximum takeoff weight with the maximum payload [N].
+    - `r_fuel_design::Float64`: Wing fuel fraction (fuel weight over `W_fuel_cap`) at the design cruise point.
+
+    **Outputs:**
+    - `W_lift::Float64`: Weight carried by the wing lift [N].
+    - `r_fuel_wing::Float64`: Fuel weight in the wing as a fraction of `W_fuel_cap`; at most one at `MTOW_MaxFuel`.
+    - `W_fuel_fuse::Float64`: Fuel weight in the fuselage [N].
+"""
+function wing_mass_state(mass_state, has_wing_fuel;
+        W_cruise, W_MTO, W_fuel, W_reserve, W_empty, W_fuel_cap, W_fuel_at_MTO, r_fuel_design)
+
+    if mass_state == WingMassState.DesignCruise
+        W_lift, W_fuel_state = W_cruise, W_fuel
+        r_fuel_wing = has_wing_fuel ? r_fuel_design : 0.0
+    elseif mass_state == WingMassState.MTOW_MaxFuel
+        W_lift, W_fuel_state = W_MTO, W_fuel_at_MTO
+        r_fuel_wing = has_wing_fuel ? min(1.0, W_fuel_at_MTO / W_fuel_cap) : 0.0
+    elseif mass_state == WingMassState.MZFW
+        W_lift, W_fuel_state = W_MTO - W_fuel + W_reserve, W_reserve
+        r_fuel_wing = has_wing_fuel ? W_reserve / W_fuel_cap : 0.0
+    else # WingMassState.Light
+        W_lift, W_fuel_state = W_empty + W_reserve, W_reserve
+        r_fuel_wing = has_wing_fuel ? W_reserve / W_fuel_cap : 0.0
+    end
+
+    W_fuel_fuse = has_wing_fuel ? 0.0 : W_fuel_state
+    return (W_lift = W_lift, r_fuel_wing = r_fuel_wing, W_fuel_fuse = W_fuel_fuse)
+end # wing_mass_state
+
+"""
     wing_weights!(wing, po, gammat, gammas, 
-       Nload, We, neout, dyeout, neinn, dyeinn, sigfac, rhofuel; n_wings=2.0, has_strut=false)
+       Nload, We, neout, dyeout, neinn, dyeinn, sigfac, rhofuel; n_wings=2.0, has_strut=false,
+       design_wing_fuel=nothing, has_wing_fuel=false, has_centerbox_fuel=false, section_loads_envelope=nothing)
 
 Calculates Wing or Tail loads, stresses, weights of individual wing sections.
 Also returns the material gauges, torsional and bending stiffness. Formerly, `get_wing_weights!()`.
@@ -143,11 +398,21 @@ Also returns the material gauges, torsional and bending stiffness. Formerly, `ge
     - `rhofuel::Float64`: Density of the fuel.
     - `n_wings::Int64`: Number of total wings (1 for Vtail).
     - `has_strut::Bool`: Whether the wing is braced by a strut (`false` for a cantilever wing).
+    - `design_wing_fuel::Union{Nothing,Float64}`: Fuel weight carried at the design point [N]. If given (not `nothing`), the panel
+        weights `wing.inboard.weight`, `wing.outboard.weight` and moments `wing.inboard.dyW`, `wing.outboard.dyW` are updated with the
+        panel structure weight (including added weight) plus the wing fuel weight, scaled by the fuel fraction `design_wing_fuel / Wfmax`.
+        If `nothing` (default), these panel fields are not modified.
+    - `has_wing_fuel::Bool`: Whether fuel is stored in the wing (the fuel fraction is zero otherwise). Only used with `design_wing_fuel`.
+    - `has_centerbox_fuel::Bool`: Whether fuel is stored in the wing center box. Only used with `design_wing_fuel`.
+    - `section_loads_envelope::Union{Nothing,NamedTuple}`: Envelope of the section loads `(S_root, M_root, S_break, M_break)` over the wing sizing cases.
+        If given (not `nothing`), it replaces the computed shear and moment of the inboard (root) and outboard (break) sections before they are sized.
+        It applies to cantilever wings only and must not be used with `has_strut`. If `nothing` (default), the computed loads are used.
 
 See [Geometry](@ref geometry),  [Wing/Tail Structures](@ref wingtail), and Section 2.7  of the [TASOPT Technical Description](@ref dreladocs). 
 """
 function wing_weights!(wing, po, gammat, gammas,
-       Nload, We, neout, dyeout, neinn, dyeinn, sigfac, rhofuel; n_wings=2.0, has_strut=false)
+       Nload, We, neout, dyeout, neinn, dyeinn, sigfac, rhofuel; n_wings=2.0, has_strut=false,
+       design_wing_fuel=nothing, has_wing_fuel=false, has_centerbox_fuel=false, section_loads_envelope=nothing)
 
     tauweb = wing.inboard.webs.material.τmax * sigfac
 
@@ -158,22 +423,14 @@ function wing_weights!(wing, po, gammat, gammas,
     etao = wing.layout.ηo
     etas = wing.layout.ηs
 
-    # Tip roll off Lift (modeled as a point load) and it's moment about ηs
-    dLt = wing.tip_lift_loss * po * wing.layout.root_chord * gammat * wing.outboard.λ
-    dMt = dLt * 0.5 * wing.layout.span * (1.0 - etas)
-
     h_avgo, h_rmso = get_average_sparbox_heights(wing.inboard.cross_section)
     h_avgs, h_rmss = get_average_sparbox_heights(wing.outboard.cross_section)
 
-    # Outboard section:
-    #---- strut-attach shear,moment from outer-wing loading. 
-    #     Note added term to account for any outboard engines.
-    #     If neout = 0 this simplifies to Drela's version which assumes engine
-    #     fixed at ηs locations only.
-    wing.outboard.max_shear_load = (po * wing.layout.span / 4.0) * (gammas + gammat) * (1.0 - etas) +
-                                   dLt - Nload * wing.outboard.weight - Nload * neout * We
-    wing.outboard.moment = (po * wing.layout.span^2 / 24.0) * (gammas + 2.0 * gammat) * (1.0 - etas)^2 +
-                           dMt - Nload * wing.outboard.dyW - Nload * neout * We * dyeout
+    outboard_section_loads!(wing, po, gammat, gammas, Nload, We, neout, dyeout)
+    if !has_strut && !isnothing(section_loads_envelope)
+        wing.outboard.max_shear_load = section_loads_envelope.S_break
+        wing.outboard.moment = section_loads_envelope.M_break
+    end
 
     #---- size strut-attach station at etas
     cs = wing.layout.root_chord*wing.inboard.λ
@@ -188,6 +445,10 @@ function wing_weights!(wing, po, gammat, gammas,
         Pstrut = 0.
 
         wing_section_loads(Cantilever(), wing, po, gammas, Nload, We, neinn, dyeinn)
+        if !isnothing(section_loads_envelope)
+            wing.inboard.max_shear_load = section_loads_envelope.S_root
+            wing.inboard.moment = section_loads_envelope.M_root
+        end
 
         inboard_dims = size_wing_section!(wing.inboard, wing.sweep, sigfac)
 
@@ -300,6 +561,16 @@ function wing_weights!(wing, po, gammat, gammas,
     fwadd = wing_additional_weight(wing)
     Wwing = n_wings * (Wscen + Wsinn + Wsout) * (1.0 + fwadd)
     wing.dxW = n_wings * (dxWsinn + dxWsout) * (1.0 + fwadd)
+
+    if !isnothing(design_wing_fuel)
+        Wfmax = has_wing_fuel ? 2.0 * ((has_centerbox_fuel ? Wfcen : 0.0) + Wfinn + Wfout) : 0.0
+        rfmax = has_wing_fuel ? design_wing_fuel / Wfmax : 0.0
+
+        wing.inboard.weight = Wsinn * (1.0 + fwadd) + rfmax * Wfinn
+        wing.outboard.weight = Wsout * (1.0 + fwadd) + rfmax * Wfout
+        wing.inboard.dyW = dyWsinn * (1.0 + fwadd) + rfmax * dyWfinn
+        wing.outboard.dyW = dyWsout * (1.0 + fwadd) + rfmax * dyWfout
+    end
 
     return Wwing, Wsinn, Wsout, dyWsinn, dyWsout, Wfcen, Wfinn, Wfout,
     dxWfinn, dxWfout, dyWfinn, dyWfout, lsp
