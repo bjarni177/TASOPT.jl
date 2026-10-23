@@ -193,7 +193,7 @@ function aircraft_drag!(ac, imission::Int, ip::Int, computes_wing_direct::Bool; 
 
 #- - - - - - - - - - - - - - - - - - - - - - - - - - - -
 #---- strut profile CD
-      if wing.has_strut
+      if ac.options.has_strut
             cdfs = para[iacdfs]
             cdps = para[iacdps]
             rVstrut = wing.strut.local_velocity_ratio

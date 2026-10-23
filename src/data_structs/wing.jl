@@ -146,7 +146,6 @@ $TYPEDFIELDS
     mean_aero_chord::Float64 = 0.0
 
     """Wing Strut"""
-    has_strut::Bool = false
     strut::Strut = Strut()
     
     """Wing flap weight fraction"""
