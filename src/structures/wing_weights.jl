@@ -74,7 +74,7 @@ end
 
 """
     wing_weights!(wing, po, gammat, gammas, 
-       Nload, We, neout, dyeout, neinn, dyeinn, sigfac, rhofuel; n_wings=2.0)
+       Nload, We, neout, dyeout, neinn, dyeinn, sigfac, rhofuel; n_wings=2.0, has_strut=false)
 
 Calculates Wing or Tail loads, stresses, weights of individual wing sections.
 Also returns the material gauges, torsional and bending stiffness. Formerly, `get_wing_weights!()`.
@@ -94,13 +94,14 @@ Also returns the material gauges, torsional and bending stiffness. Formerly, `ge
     - `sigfac::Float64`: Stress Factor.
     - `rhofuel::Float64`: Density of the fuel.
     - `n_wings::Int64`: Number of total wings (1 for Vtail).
+    - `has_strut::Bool`: Whether the wing is braced by a strut (`false` for a cantilever wing).
 
 See [Geometry](@ref geometry),  [Wing/Tail Structures](@ref wingtail), and Section 2.7  of the [TASOPT Technical Description](@ref dreladocs). 
 """
 function wing_weights!(wing, po, gammat, gammas,
-       Nload, We, neout, dyeout, neinn, dyeinn, sigfac, rhofuel; n_wings=2.0)
+       Nload, We, neout, dyeout, neinn, dyeinn, sigfac, rhofuel; n_wings=2.0, has_strut=false)
 
-    tauweb,sigstrut = wing.inboard.webs.material.τmax * sigfac, wing.strut.material.σmax * sigfac
+    tauweb = wing.inboard.webs.material.τmax * sigfac
 
     cosL = cosd(wing.layout.sweep)
     sinL = sind(wing.layout.sweep)
@@ -131,7 +132,7 @@ function wing_weights!(wing, po, gammat, gammas,
 
     outboard_dims = size_wing_section!(wing.outboard, wing.sweep, sigfac)
     # Inboard Section:
-    if(!wing.has_strut) 
+    if !has_strut
         #----- no strut, with or without engine at etas
         ls = 0.
         Tstrut = 0.
@@ -156,7 +157,9 @@ function wing_weights!(wing, po, gammat, gammas,
 
         lsp = 0.
         Tstrutp = 0.
-        wing.strut.cos_lambda = 1.0
+        if wing isa Wing # Tail has no strut
+            wing.strut.cos_lambda = 1.0
+        end
 
     else
         #----- strut present
@@ -177,7 +180,7 @@ function wing_weights!(wing, po, gammat, gammas,
         Tstrutp = Tstrut*lsp/ls
         wing.strut.cos_lambda = ls/lsp
         wing.strut.axial_force = Tstrutp
-        wing.strut.area = Tstrutp/sigstrut
+        wing.strut.area = Tstrutp/(wing.strut.material.σmax * sigfac)
         wing.strut.length = lsp
         wing.strut.weight   = 2.0*wing.strut.material.ρ*gee*wing.strut.area*lsp
         wing.strut.dxW = wing.strut.weight * 0.25*wing.layout.span*(etas-etao) * sinL/cosL
