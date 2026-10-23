@@ -36,6 +36,8 @@ $TYPEDFIELDS
     #wing/stability options
     """Wing position strategy for longitudinal stability analysis: `Fixed` = static wing position, `FixedCLh` = move wing to achieve `CLh = CLhspec` in cruise, `MinStaticMargin` = move wing to achieve minimum static margin = `SMmin`"""
     opt_move_wing::WingMove.T
+    """Wing bracing configuration: `Cantilever` = unbraced, `StrutBraced` = braced by a strut, `TrussBraced` = braced by a truss"""
+    opt_wing_config::WingConfig.T = WingConfig.Cantilever
 
     #Trefftz plane options
     """Trefftz plane induced drag analysis configuration (discretization, k_tip, bunch, root_contraction)"""
@@ -49,10 +51,11 @@ function Base.summary(opt::Options)
   println("Propulsion Architecture: ", string(opt.opt_prop_sys_arch))
   println("Engine Location: ", string(opt.opt_engine_location))
   println("Cabin decks: ", opt.is_doubledecker ? "double" : "single")
+  println("Wing Configuration: ", string(opt.opt_wing_config))
   println("---------------------------------")
 end
 function Base.show(io::IO, opt::Options)
   print(io, "Options(Fuel: $(string(opt.opt_fuel)); Fuel Storage: " * (opt.has_wing_fuel ? "wing " *
       (opt.has_centerbox_fuel ? "wingbox " : "(none in wingbox) ") : "") * (opt.has_fuselage_fuel ? "fuselage " : "") * 
-      "; Propulsion Arch.: $(string(opt.opt_prop_sys_arch)); Engine Location: $(string(opt.opt_engine_location)); Cabin decks: $(opt.is_doubledecker ? "double" : "single"))")
+      "; Propulsion Arch.: $(string(opt.opt_prop_sys_arch)); Engine Location: $(string(opt.opt_engine_location)); Cabin decks: $(opt.is_doubledecker ? "double" : "single"); Wing Configuration: $(string(opt.opt_wing_config)))")
 end
