@@ -1,3 +1,4 @@
+using EnumX
 using ..aerodynamics
 abstract type AbstractWing end
 
@@ -102,6 +103,101 @@ $TYPEDFIELDS
 end
 
 """
+Mass state used for a wing sizing load case.
+
+- `DesignCruise`: start-of-cruise weight, wing fuel is the design-mission fuel
+- `MTOW_MaxFuel`: maximum takeoff weight, wing tanks as full as that weight allows
+- `MZFW`: maximum zero-fuel weight, wing fuel is the reserve only
+- `Light`: operating empty weight plus reserve fuel, no payload
+"""
+@enumx WingMassState DesignCruise MTOW_MaxFuel MZFW Light
+
+"""
+How the load factor of a wing sizing load case is obtained.
+
+- `Maneuver`: prescribed limit load factor, in flight
+- `Gust`: load factor from a discrete gust; `load_factor` only gives the sign
+- `Ground`: prescribed load factor on the ground, with no wing lift
+"""
+@enumx WingLoadKind Maneuver Gust Ground
+
+"""
+$TYPEDEF
+
+One wing sizing load case.
+
+$TYPEDFIELDS
+"""
+@kwdef mutable struct WingLoadCase
+    """How the load factor is obtained"""
+    kind::WingLoadKind.T = WingLoadKind.Maneuver
+    """Limit load factor for `Maneuver` and `Ground` cases; sign only (±1) for `Gust` cases [-]"""
+    load_factor::Float64 = 0.0
+    """Gust cases: design gust velocity U_de [m/s EAS] (50 ft/s at the cruise speed)"""
+    gust_velocity_EAS::Float64 = 15.24
+    """Gust cases: flight speed [m/s EAS]; 0 means use the cruise speed from the mission"""
+    gust_speed_EAS::Float64 = 0.0
+    """Weight and wing fuel state in which the case is evaluated"""
+    mass_state::WingMassState.T
+    """Scale on the tail load of the case, which is tail_load_scale · (load factor / pull-up load factor) · maximum tail load [-]"""
+    tail_load_scale::Float64 = 1.0
+    """Whether the case is used when sizing the wing"""
+    active::Bool = true
+    """Load factor actually used by the case (gust cases: 1 ± Δn) [-]"""
+    n_computed::Float64 = 0.0
+end
+
+"""
+$TYPEDEF
+
+Wing root and break loads of one sizing load case.
+
+$TYPEDFIELDS
+"""
+@kwdef mutable struct WingCaseLoads
+    """Shear load at the wing root [N]"""
+    S_root::Float64 = 0
+    """Bending moment at the wing root [N m]"""
+    M_root::Float64 = 0
+    """Shear load at the wing break [N]"""
+    S_break::Float64 = 0
+    """Bending moment at the wing break [N m]"""
+    M_break::Float64 = 0
+end
+
+"""
+$TYPEDEF
+
+The fixed set of wing sizing load cases, with their results.
+Only the `pullup` case is active by default.
+
+$TYPEDFIELDS
+"""
+@kwdef mutable struct WingSizingLoads
+    """Pull-up at the limit load factor, design cruise mass state"""
+    pullup::WingLoadCase = WingLoadCase(load_factor = 3.0, mass_state = WingMassState.DesignCruise)
+    """Push-over at negative load factor, maximum takeoff weight with full wing fuel"""
+    pushover::WingLoadCase = WingLoadCase(load_factor = -1.0, mass_state = WingMassState.MTOW_MaxFuel, active = false)
+    """Pull-up at the limit load factor, light mass state"""
+    pullup_light::WingLoadCase = WingLoadCase(load_factor = 3.0, mass_state = WingMassState.Light, active = false)
+    """Push-over at negative load factor, light mass state"""
+    pushover_light::WingLoadCase = WingLoadCase(load_factor = -1.0, mass_state = WingMassState.Light, active = false)
+    """Taxi on the ground, maximum takeoff weight with full wing fuel"""
+    taxi::WingLoadCase = WingLoadCase(kind = WingLoadKind.Ground, load_factor = -2.0, mass_state = WingMassState.MTOW_MaxFuel, active = false)
+    """Upward discrete gust, light mass state"""
+    gust_up_light::WingLoadCase = WingLoadCase(kind = WingLoadKind.Gust, load_factor = 1.0, mass_state = WingMassState.Light, active = false)
+    """Downward discrete gust, light mass state"""
+    gust_down_light::WingLoadCase = WingLoadCase(kind = WingLoadKind.Gust, load_factor = -1.0, mass_state = WingMassState.Light, active = false)
+
+    """Loads of each case, keyed by the case field name"""
+    results::Dict{Symbol,WingCaseLoads} = Dict{Symbol,WingCaseLoads}()
+    """Case that sets the wing root loads"""
+    governing_root::Symbol = :pullup
+    """Case that sets the wing break loads"""
+    governing_break::Symbol = :pullup
+end
+
+"""
 $TYPEDEF
 
 The Wing structure is composed of 6 sub-structures as follow and are visualized [here](../assets/wing_struct.png).
@@ -147,7 +243,10 @@ $TYPEDFIELDS
 
     """Wing Strut"""
     strut::Strut = Strut()
-    
+
+    """Wing sizing load cases and their results"""
+    sizing_loads::WingSizingLoads = WingSizingLoads()
+
     """Wing flap weight fraction"""
     weight_frac_flap::Float64 = 0.0
     """Wing slats weight fraction"""
