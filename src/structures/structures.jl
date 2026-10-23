@@ -14,7 +14,7 @@ using Roots
 using NLopt
 import ..TASOPT: __TASOPTindices__, __TASOPTroot__, unpack_ac, unpack_ac_components, TailSizing
 
-export wing_weights!, calculate_centroid_offset!, calculate_centroid_offset, fusew!,
+export wing_weights!, wing_case_loads, wing_case_root_loading, evaluate_wing_sizing_cases!, wing_sizing_masses, calculate_centroid_offset!, calculate_centroid_offset, fusew!,
  update_fuse!, update_fuse_for_pax!, place_cabin_seats, find_cabin_width, find_floor_angles, arrange_seats,
 size_landing_gear!
 
