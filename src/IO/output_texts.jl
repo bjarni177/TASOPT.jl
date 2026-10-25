@@ -166,3 +166,30 @@ function geometry(ac::aircraft; io = stdout)
 
 
 end
+
+"""
+`wing_sizing_loads_summary` prints a table of the wing root and break loads of the evaluated wing sizing
+load cases, with the load factor of each case. The cases that set the wing root and break loads are marked
+with a `*`.
+"""
+function wing_sizing_loads_summary(ac::aircraft; io = stdout)
+    sl = ac.wing.sizing_loads
+    printstyled(io, "Wing Sizing Load Cases:\n -------------- \n", color=:bold)
+
+    names = [name for name in fieldnames(typeof(sl)) if haskey(sl.results, name)]
+    if isempty(names)
+        println(io, "No wing sizing load cases have been evaluated.")
+        return
+    end
+
+    @printf(io, "%-16s %6s %12s %12s %12s %12s  %s  %s\n",
+            "Case", "n [-]", "S_root [kN]", "M_root [kNm]", "S_break [kN]", "M_break [kNm]", "Gov.root", "Gov.break")
+    for name in names
+        loads = sl.results[name]
+        @printf(io, "%-16s %6.2f %12.1f %12.1f %12.1f %12.1f  %8s  %9s\n",
+                name, getfield(sl, name).n_computed,
+                loads.S_root / 1e3, loads.M_root / 1e3, loads.S_break / 1e3, loads.M_break / 1e3,
+                name == sl.governing_root ? "*" : "", name == sl.governing_break ? "*" : "")
+    end
+    println(io, "* marks the case with the largest bending moment at the wing root or at the wing break.")
+end
