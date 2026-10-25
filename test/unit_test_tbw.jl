@@ -824,6 +824,64 @@ end
     end
 end
 
+# Text summary of the wing sizing cases
+
+@testset "wing sizing loads summary" verbose=true begin
+    WingCaseLoads = TASOPT.structures.WingCaseLoads
+    ac = CoreLogging.with_logger(CoreLogging.NullLogger()) do
+        load_default_model()
+    end
+    sl = ac.wing.sizing_loads
+
+    function summary_text(ac)
+        io = IOBuffer()
+        TASOPT.wing_sizing_loads_summary(ac; io = io)
+        String(take!(io))
+    end
+    # first line that names the case, so that pullup does not match pullup_light
+    case_row(text, name) = findfirst(line -> occursin(Regex("\\b$name\\b"), line), split(text, '\n'))
+    row_text(text, name) = split(text, '\n')[case_row(text, name)]
+    # the leading digits of a value appear in the text, whatever the number format
+    shows_value(row, x) = occursin(first(replace(string(round(abs(x), sigdigits = 3)), r"\D" => ""), 3),
+                                   replace(row, r"[.,]" => ""))
+    marked(row) = occursin(r"\*|root|break|governing"i, row)
+
+    @testset "no evaluated cases" begin
+        @test isempty(sl.results)
+        text = summary_text(ac)
+        @test occursin(r"no .*cases"i, text)
+        @test all(isnothing(case_row(text, name)) for name in fieldnames(typeof(sl))[1:7])
+    end
+
+    @testset "table of the evaluated cases" begin
+        sl.pushover.n_computed, sl.taxi.n_computed = -1.0, -2.0
+        # inserted out of order: the rows follow the order of the case fields
+        sl.results[:taxi] = WingCaseLoads(S_root = 1.11e5, M_root = 2.22e6, S_break = 3.33e4, M_break = 4.44e5)
+        sl.results[:pushover] = WingCaseLoads(S_root = 5.55e5, M_root = 6.66e6, S_break = 7.77e4, M_break = 8.88e5)
+        sl.results[:pullup] = WingCaseLoads(S_root = 1.23e5, M_root = 4.56e6, S_break = 7.89e4, M_break = 9.87e5)
+        sl.governing_root, sl.governing_break = :pushover, :taxi
+        text = summary_text(ac)
+        rows = Dict(name => row_text(text, name) for name in (:pullup, :pushover, :taxi))
+
+        @test isnothing(case_row(text, :pullup_light))
+        @test case_row(text, :pullup) < case_row(text, :pushover) < case_row(text, :taxi)
+        for (name, loads) in sl.results
+            @test all(shows_value(rows[name], getfield(loads, f)) for f in fieldnames(WingCaseLoads))
+        end
+        @test occursin("-1", rows[:pushover])
+        @test occursin("-2", rows[:taxi])
+        @test marked(rows[:pushover])
+        @test marked(rows[:taxi])
+        @test !marked(rows[:pullup])
+    end
+
+    @testset "geometry does not print the summary" begin
+        io = IOBuffer()
+        TASOPT.geometry(ac; io = io)
+        @test isnothing(case_row(String(take!(io)), :pushover))
+    end
+end
+
 # Mass inputs of the wing sizing cases, from the aircraft weights of a sizing iteration
 
 @testset "wing sizing case masses" verbose=true begin

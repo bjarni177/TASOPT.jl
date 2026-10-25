@@ -37,6 +37,23 @@
         @test p3 isa Plots.Plot
         p4 = TASOPT.MomentShear(ac)
         @test p4 isa Plots.Plot
+        # the title shows the governing case; the plot also works without evaluated cases
+        function title_text(p)
+            join([get(p.attr, :plot_title, ""); [sp[:title] for sp in p.subplots]], " ")
+        end
+        ac_cases = deepcopy(ac)
+        sl = ac_cases.wing.sizing_loads
+        sl.results[:pushover] = TASOPT.structures.WingCaseLoads(S_root = 5.0e5, M_root = 6.0e6, S_break = 7.0e4, M_break = 8.0e5)
+        sl.results[:taxi] = TASOPT.structures.WingCaseLoads(S_root = 1.0e5, M_root = 2.0e6, S_break = 3.0e4, M_break = 4.0e5)
+        sl.governing_root, sl.governing_break = :pushover, :taxi
+        p4_cases = TASOPT.MomentShear(ac_cases)
+        @test p4_cases isa Plots.Plot
+        @test occursin("pushover", title_text(p4_cases))
+        @test occursin("taxi", title_text(p4_cases))
+
+        empty!(sl.results)
+        @test TASOPT.MomentShear(ac_cases) isa Plots.Plot
+
         p5 = TASOPT.PayloadRange(ac)
         @test p5 isa Plots.Plot
         p6 = DragPolar(ac)
