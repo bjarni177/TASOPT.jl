@@ -1014,6 +1014,15 @@ function MomentShear(ac::aircraft)
         end
     end
 
+    # Wing sizing load cases that have been evaluated, in declaration order
+    sl = wing.sizing_loads
+    case_names = [name for name in fieldnames(typeof(sl)) if haskey(sl.results, name)]
+
+    title = "Shear and Moment Distribution along Wing"
+    if !isempty(case_names)
+        title *= "\nGoverning: root = $(sl.governing_root), break = $(sl.governing_break)"
+    end
+
     # Define layout
     layout = @layout [A; B]
     fig = plot(layout=layout, size=(800, 500), dpi=300, link=:x, margin=4mm)
@@ -1025,7 +1034,7 @@ function MomentShear(ac::aircraft)
         ylabel="Shear [N]", 
         label="",
         subplot=1,
-        title="Shear and Moment Distribution along Wing"
+        title=title
     )
     # Moment
     plot!(fig, 
@@ -1048,6 +1057,17 @@ function MomentShear(ac::aircraft)
     annotate!(fig[2], etas, Mo,
             text(" ← Planform Break",
             halign=:left, valign=:top, 11,))
+
+    # Root and break loads of each sizing load case (absolute values), one color per case.
+    # The legend is shown in the shear plot only.
+    for (i, name) in enumerate(case_names)
+        loads = sl.results[name]
+        scatter!(fig, [etao, etas], abs.([loads.S_root, loads.S_break]),
+                 subplot=1, label=string(name), color=i, markersize=5, markerstrokewidth=0)
+        scatter!(fig, [etao, etas], abs.([loads.M_root, loads.M_break]),
+                 subplot=2, label="", color=i, markersize=5, markerstrokewidth=0)
+    end
+    isempty(case_names) || plot!(fig, subplot=1, legend=:topright, legendfontsize=8)
 
     return fig
 
