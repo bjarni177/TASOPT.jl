@@ -610,6 +610,16 @@ readwing(x) = read_input(x, wing_i, dwing)
         wing.strut.web_to_box_height = readstrut("web_to_box_height")
         wing.strut.end_fixity_K = readstrut("end_fixity_K")
         wing.strut.weight_frac_added = readstrut("weight_frac_added")
+
+        # If the template lacks the key, the Strut() default is kept.
+        dstrut = dwing["Strut"]
+        strut_force_str = (haskey(strut_i, "opt_strut_force") || haskey(dstrut, "opt_strut_force")) ?
+            readstrut("opt_strut_force") : string(wing.strut.opt_strut_force)
+        strut_force_models = instances(StrutForceModel.T)
+        i_model = findfirst(model -> compare_strings(strut_force_str, string(model)), strut_force_models)
+        isnothing(i_model) && error("Unrecognized strut force model: $strut_force_str. " *
+                                    "Valid names: " * join(string.(strut_force_models), ", "))
+        wing.strut.opt_strut_force = strut_force_models[i_model]
     end
 
     ## Wing sizing load cases, one [Wing.SizingLoads.<case>] table per case.
@@ -624,6 +634,9 @@ readwing(x) = read_input(x, wing_i, dwing)
         pullup_i["load_factor"] = mis["Nlift"]
     end
 
+    # A braced wing activates these cases unless the user input sets `active` for the case
+    braced_default_cases = (:pushover, :pullup_light, :pushover_light, :taxi)
+
     for case_name in fieldnames(typeof(wing.sizing_loads))
         case = getfield(wing.sizing_loads, case_name)
         case isa typeof(wing.sizing_loads.pullup) || continue # skip results and governing_root
@@ -633,7 +646,11 @@ readwing(x) = read_input(x, wing_i, dwing)
         readcase(x, struct_default) = (haskey(case_i, x) || haskey(dcase, x)) ? read_input(x, case_i, dcase) : struct_default
 
         case.load_factor = readcase("load_factor", case.load_factor)
-        case.active = readcase("active", case.active)
+        if _opt_wing_config != WingConfig.Cantilever && case_name in braced_default_cases && !haskey(case_i, "active")
+            case.active = true
+        else
+            case.active = readcase("active", case.active)
+        end
         case.tail_load_scale = readcase("tail_load_scale", case.tail_load_scale)
 
         mass_state_str = readcase("mass_state", string(case.mass_state))
