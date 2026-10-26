@@ -359,19 +359,17 @@ function _size_aircraft!(ac; itermax=35,
         dyeinn = 0.5 * wing.layout.span * (wing.layout.ηs - wing.layout.ηo)
 
         # Load cases of the wing sizing: records the case loads in wing.sizing_loads (results, governing_root,
-        # governing_break and n_computed). The returned envelope sizes the wing when more than one case is active
-        # (with only the pull-up the loads computed in wing_weights! are used). The wing is not modified.
+        # governing_break, governing_strut and n_computed). The returned envelope sizes a cantilever wing when more
+        # than one case is active (with only the pull-up the loads computed in wing_weights! are used), and a braced
+        # wing with the compatibility strut force model. The wing is not modified.
         # parg[igWfmax] is the wing tank capacity of the previous iteration.
-        envelope = nothing
-        if !options.has_strut
-            masses = wing_sizing_masses(W_cruise = BW, W_MTO = WMTO, W_pay = Wpay, W_paymax = Wpaymax,
-                                        W_fuel = parg[igWfuel], freserve = parg[igfreserve],
-                                        W_fuel_cap = parg[igWfmax], has_wing_fuel = options.has_wing_fuel)
-            envelope = evaluate_wing_sizing_cases!(wing, masses, options.has_wing_fuel, para[iarclt, ip], para[iarcls, ip],
-                                                   Lhtail, γt, γs, Weng1, dyeinn)
-        end
+        masses = wing_sizing_masses(W_cruise = BW, W_MTO = WMTO, W_pay = Wpay, W_paymax = Wpaymax,
+                                    W_fuel = parg[igWfuel], freserve = parg[igfreserve],
+                                    W_fuel_cap = parg[igWfmax], has_wing_fuel = options.has_wing_fuel)
+        envelope = evaluate_wing_sizing_cases!(wing, masses, options.has_wing_fuel, para[iarclt, ip], para[iarcls, ip],
+                                               Lhtail, γt, γs, Weng1, dyeinn; has_strut = options.has_strut)
         more_than_one_case = length(wing.sizing_loads.results) > 1
-        section_loads_envelope = more_than_one_case ? envelope : nothing
+        section_loads_envelope = (more_than_one_case || options.has_strut) ? envelope : nothing
 
         # Call wing_weights function
         Wwing,Wsinn,Wsout,
