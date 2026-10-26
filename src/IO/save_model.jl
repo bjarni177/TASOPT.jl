@@ -79,7 +79,6 @@ function save_aircraft_model(ac::TASOPT.aircraft=TASOPT.read_aircraft_model(),
         d_miss["max_pax"] = parg[igWpaymax] ./ parm[imWperpax, :]
         d_miss["fuel_reserves"] = parg[igfreserve]
         d_miss["Vne"] = parg[igVne]
-        d_miss["Nlift"] = wing.sizing_loads.pullup.load_factor
 
     # mission: Takeoff
     d_to = Dict()
@@ -233,6 +232,20 @@ function save_aircraft_model(ac::TASOPT.aircraft=TASOPT.read_aircraft_model(),
                 d_wing_strut["weight_frac_added"] = wing.strut.weight_frac_added
             d_wing["Strut"] = d_wing_strut
         end
+
+    # Sizing load cases
+        d_wing_loads = Dict()
+        for case_name in fieldnames(typeof(wing.sizing_loads))
+            case = getfield(wing.sizing_loads, case_name)
+            case isa typeof(wing.sizing_loads.pullup) || continue # skip results and governing_root
+
+            d_wing_loads[string(case_name)] = Dict(
+                "load_factor" => case.load_factor,
+                "mass_state" => string(case.mass_state),
+                "active" => case.active,
+                "tail_load_scale" => case.tail_load_scale)
+        end
+        d_wing["SizingLoads"] = d_wing_loads
 
     #Aero , for multiple segments
     d_wing_aero = Dict()
