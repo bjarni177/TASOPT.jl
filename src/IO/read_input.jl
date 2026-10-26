@@ -171,7 +171,6 @@ parm[imWpay, :] .= payload
 parg[igWpaymax] = maxpay 
 parg[igfreserve] = readmis("fuel_reserves")
 parg[igVne] = Speed(readmis("Vne"))
-wing.sizing_loads.pullup.load_factor = readmis("Nlift")
 
 # Setup option variables
 options = read_input("Options", data, default)
@@ -612,6 +611,38 @@ readwing(x) = read_input(x, wing_i, dwing)
         wing.strut.web_to_box_height = readstrut("web_to_box_height")
         wing.strut.end_fixity_K = readstrut("end_fixity_K")
         wing.strut.weight_frac_added = readstrut("weight_frac_added")
+    end
+
+    ## Wing sizing load cases, one [Wing.SizingLoads.<case>] table per case.
+    # If the template lacks the table or a key, the WingSizingLoads() defaults are kept.
+    loads_i = get!(wing_i, "SizingLoads", Dict{String, Any}())
+    dloads = get(dwing, "SizingLoads", Dict{String, Any}())
+
+    # The deprecated [Mission] key Nlift is used unless [Wing.SizingLoads.pullup] sets load_factor
+    pullup_i = get!(loads_i, "pullup", Dict{String, Any}())
+    if haskey(mis, "Nlift") && !haskey(pullup_i, "load_factor")
+        @info "The [Mission] key \"Nlift\" is deprecated; use \"load_factor\" in [Wing.SizingLoads.pullup] instead."
+        pullup_i["load_factor"] = mis["Nlift"]
+    end
+
+    for case_name in fieldnames(typeof(wing.sizing_loads))
+        case = getfield(wing.sizing_loads, case_name)
+        case isa typeof(wing.sizing_loads.pullup) || continue # skip results and governing_root
+
+        case_i = get!(loads_i, string(case_name), Dict{String, Any}())
+        dcase = get(dloads, string(case_name), Dict{String, Any}())
+        readcase(x, struct_default) = (haskey(case_i, x) || haskey(dcase, x)) ? read_input(x, case_i, dcase) : struct_default
+
+        case.load_factor = readcase("load_factor", case.load_factor)
+        case.active = readcase("active", case.active)
+        case.tail_load_scale = readcase("tail_load_scale", case.tail_load_scale)
+
+        mass_state_str = readcase("mass_state", string(case.mass_state))
+        mass_states = instances(typeof(case.mass_state))
+        i_state = findfirst(state -> compare_strings(mass_state_str, string(state)), mass_states)
+        isnothing(i_state) && error("Unrecognized wing mass state for $case_name: $mass_state_str. " *
+                                    "Valid names: " * join(string.(mass_states), ", "))
+        case.mass_state = mass_states[i_state]
     end
 
     airfoil_data = joinpath(__TASOPTroot__,"airfoil_data/", readwing("airfoil"))
