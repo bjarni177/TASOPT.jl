@@ -1121,3 +1121,83 @@ end
             read_aircraft_model(joinpath(TASOPT.__TASOPTroot__, "../example/cryo_input.toml")))
     end
 end
+
+# Gust load factor increment: hand calculations
+
+@testset "wing lift curve slope" verbose=true begin
+    wing_lift_curve_slope = TASOPT.wing_lift_curve_slope
+
+    @testset "default_tbw.toml wing at cruise Mach" begin
+        ac, _ = read_aircraft_from_text(read(joinpath(TASOPT.__TASOPTroot__,
+                                                      "../example/defaults/default_tbw.toml"), String))
+        AR, sweep, Mach = ac.wing.layout.AR, ac.wing.layout.sweep, ac.para[iaMach, ipcruise1, 1]
+        @test (AR, sweep, Mach) == (20.0, 20.0, 0.8)
+
+        # β = sqrt(1 - 0.8^2) = 0.6 and tand(20)^2 = 0.13247433
+        # CLα = 2π·20 / (2 + sqrt(4 + (20·0.6)^2 · (1 + 0.13247433/0.6^2)))
+        #     = 125.66370614 / (2 + sqrt(200.98973257)) = 125.66370614 / (2 + 14.17708477) = 7.7680069 1/rad
+        @test wing_lift_curve_slope(AR, sweep, Mach) ≈ 7.768006901803908 rtol = 1e-6
+    end
+
+    @testset "limits" begin
+        # a thin infinite wing in incompressible flow has the 2D slope 2π
+        @test wing_lift_curve_slope(1e6, 0.0, 0.0) ≈ 2π rtol = 1e-5
+        # incompressible, the slope stays below 2π and grows with the aspect ratio
+        @test issorted([wing_lift_curve_slope(AR, 20.0, 0.0) for AR in (5.0, 10.0, 20.0, 30.0)])
+        @test all(wing_lift_curve_slope(AR, 20.0, 0.0) < 2π for AR in (5.0, 10.0, 20.0, 30.0))
+        # sweep lowers the slope
+        @test wing_lift_curve_slope(10.0, 30.0, 0.8) < wing_lift_curve_slope(10.0, 0.0, 0.8)
+    end
+end
+
+@testset "gust load increment" verbose=true begin
+    gust_load_increment = TASOPT.gust_load_increment
+    U_de, V_EAS, CL_alpha, c_mean = 15.24, 154.3, 4.5, 4.0   # m/s EAS (50 ft/s, 300 kt), 1/rad, m
+    ρ0 = TASOPT.ρSL   # 1.2255627 kg/m³
+
+    # Pratt–Walker: μ = 2(W/S) / (ρ0·c_mean·CLα·g),  K_g = 0.88μ/(5.3+μ),  Δn = ρ0·U_de·V·CLα·K_g / (2(W/S))
+    @testset "hand calculation" begin
+        # W/S = 5500 N/m²: μ = 11000 / (1.2255627·4·4.5·9.81) = 11000/216.40986 = 50.829476
+        #   K_g = 0.88·50.829476/(5.3+50.829476) = 0.79690640
+        #   Δn  = 1.2255627·15.24·154.3·4.5·0.79690640 / 11000 = 12968.7746·0.79690640/11000 = 0.93953632
+        @test gust_load_increment(5500.0, c_mean, CL_alpha, U_de, V_EAS) ≈ 0.9395363236301301 rtol = 1e-6
+        # W/S = 3500 N/m²: μ = 7000/216.40986 = 32.346030, K_g = 0.75610912
+        #   Δn  = 12968.7746·0.75610912/7000 = 1.40082982
+        @test gust_load_increment(3500.0, c_mean, CL_alpha, U_de, V_EAS) ≈ 1.4008298164662953 rtol = 1e-6
+    end
+
+    @testset "increment grows as the wing loading falls" begin
+        Δn = [gust_load_increment(WS, c_mean, CL_alpha, U_de, V_EAS) for WS in (6000.0, 5000.0, 4000.0, 3000.0)]
+        @test issorted(Δn)
+        @test all(Δn .> 0)
+    end
+end
+
+# Switching sizing cases on and off changes the governing cases of a sized wing
+
+@testset "governing sizing case follows the active cases" verbose=true begin
+    # The strut-braced default_tbw.toml has no cantilever load cases, and at AR = 20 a cantilever
+    # wing cannot be sized, so the reference wing is made a cantilever with AR = 13.
+    path = joinpath(TASOPT.__TASOPTroot__, "../example/defaults/default_tbw.toml")
+    txt = replace(read(path, String), "wing_config = \"strut_braced\"" => "wing_config = \"cantilever\"",
+                  "AR    = 20.0" => "AR    = 13.0")
+    ac, _ = read_aircraft_from_text(txt)
+    @test !ac.options.has_strut
+    @test ac.wing.layout.AR == 13.0
+
+    sl = ac.wing.sizing_loads
+    function size_with_active(active)
+        for name in (:pullup, :pushover)
+            getfield(sl, name).active = name in active
+        end
+        CoreLogging.with_logger(CoreLogging.NullLogger()) do
+            size_aircraft!(ac, iter = 50, printiter = false)
+        end
+        return (Set(keys(sl.results)), sl.governing_root, sl.governing_break)
+    end
+
+    @test size_with_active((:pullup,)) == (Set([:pullup]), :pullup, :pullup)
+    # the push-over case (-1 g) has smaller loads than the pull-up (3 g), so it governs once alone
+    @test size_with_active((:pushover,)) == (Set([:pushover]), :pushover, :pushover)
+    @test size_with_active((:pullup, :pushover)) == (Set([:pullup, :pushover]), :pullup, :pullup)
+end
