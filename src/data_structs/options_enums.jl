@@ -49,6 +49,16 @@ Wing structural bracing configuration.
 @enumx WingConfig Cantilever StrutBraced TrussBraced
 
 """
+    StrutForceModel
+
+Model for the force that a strut carries in a braced wing.
+
+- `Compatibility`: strut force from the compatibility of the wing and strut deflections at the strut attachment
+- `Prescribed`: strut force from a fixed rule on the lift loading of the inboard wing
+"""
+@enumx StrutForceModel Compatibility Prescribed
+
+"""
     FuelType
 
 Fuel type carried by the aircraft.
@@ -90,6 +100,12 @@ function Base.string(config::WingConfig.T)
     config == WingConfig.StrutBraced && return "strut_braced"
     config == WingConfig.TrussBraced && return "truss_braced"
     error("Unknown WingConfig value: $config")
+end
+
+function Base.string(model::StrutForceModel.T)
+    model == StrutForceModel.Compatibility && return "compatibility"
+    model == StrutForceModel.Prescribed    && return "prescribed"
+    error("Unknown StrutForceModel value: $model")
 end
 
 function Base.string(fuel::FuelType.T)
