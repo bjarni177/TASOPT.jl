@@ -12,7 +12,7 @@ using ..materials
 using NLsolve
 using Roots
 using NLopt
-import ..TASOPT: __TASOPTindices__, __TASOPTroot__, unpack_ac, unpack_ac_components, TailSizing
+import ..TASOPT: __TASOPTindices__, __TASOPTroot__, unpack_ac, unpack_ac_components, TailSizing, StrutForceModel
 
 export wing_weights!, wing_case_loads, wing_case_root_loading, wing_lift_curve_slope, gust_load_increment, 
 evaluate_wing_sizing_cases!, wing_sizing_masses, calculate_centroid_offset!, calculate_centroid_offset, fusew!,
