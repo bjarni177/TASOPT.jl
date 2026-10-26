@@ -229,6 +229,60 @@ function wing_case_root_loading(case, wing, rclt, rcls, W_lift, Lhtail, n_pullup
 end # wing_case_root_loading
 
 """
+    wing_lift_curve_slope(AR, sweep, Mach)
+
+Returns the lift curve slope of a finite wing from the Helmbold (DATCOM) formula
+```math
+C_{L_\\alpha} = \\frac{2\\pi AR}{2 + \\sqrt{4 + (AR\\,\\beta)^2 \\left(1 + \\tan^2\\Lambda / \\beta^2\\right)}}, \\qquad \\beta = \\sqrt{1 - M^2}
+```
+The formula is valid for subsonic Mach numbers. DATCOM uses the mid-chord sweep ``\\Lambda``; the
+quarter-chord sweep of the wing layout is used as an approximation of it.
+
+!!! details "🔃 Inputs and Outputs"
+    **Inputs:**
+    - `AR::Float64`: Wing aspect ratio.
+    - `sweep::Float64`: Wing sweep angle [deg].
+    - `Mach::Float64`: Flight Mach number.
+
+    **Outputs:**
+    - `CL_alpha::Float64`: Wing lift curve slope [1/rad].
+"""
+function wing_lift_curve_slope(AR, sweep, Mach) # standard range of the formulation is up to Mach <= 0.80
+    β = sqrt(1 - Mach^2)
+    return 2π * AR / (2 + sqrt(4 + (AR * β)^2 * (1 + tand(sweep)^2 / β^2))) # Polhamus formulation
+end # wing_lift_curve_slope
+
+"""
+    gust_load_increment(W_over_S, c_mean, CL_alpha, U_de, V_EAS)
+
+Returns the incremental load factor of an aircraft in a vertical gust from the Pratt–Walker gust alleviation
+formula (https://ntrs.nasa.gov/api/citations/19930090988/downloads/19930090988.pdf)
+```math
+\\mu = \\frac{2\\,(W/S)}{\\rho_0\\, \\bar{c}\\, C_{L_\\alpha}\\, g}, \\qquad K_g = \\frac{0.88\\,\\mu}{5.3 + \\mu}, \\qquad
+\\Delta n = \\frac{\\rho_0\\, U_{de}\\, V_{EAS}\\, C_{L_\\alpha}\\, K_g}{2\\,(W/S)}
+```
+where ``\\rho_0`` is the sea-level air density. The gust velocity and the airspeed are equivalent airspeeds (EAS).
+The wing sizing cases do not use this function yet.
+
+!!! details "🔃 Inputs and Outputs"
+    **Inputs:**
+    - `W_over_S::Float64`: Wing loading [N/m²].
+    - `c_mean::Float64`: Mean geometric chord, wing area over span [m].
+    - `CL_alpha::Float64`: Wing lift curve slope [1/rad].
+    - `U_de::Float64`: Derived gust velocity [m/s EAS].
+    - `V_EAS::Float64`: Equivalent airspeed [m/s].
+
+    **Outputs:**
+    - `Δn::Float64`: Magnitude of the incremental load factor.
+"""
+function gust_load_increment(W_over_S, c_mean, CL_alpha, U_de, V_EAS)
+    ρ0 = atmos(0.0).ρ
+    μ = 2 * W_over_S / (ρ0 * c_mean * CL_alpha * gee)
+    K_g = 0.88 * μ / (5.3 + μ)
+    return ρ0 * U_de * V_EAS * CL_alpha * K_g / (2 * W_over_S)
+end # gust_load_increment
+
+"""
     wing_sizing_masses(; W_cruise, W_MTO, W_pay, W_paymax, W_fuel, freserve, W_fuel_cap, has_wing_fuel)
 
 Returns the weights that [`evaluate_wing_sizing_cases!`](@ref) passes to [`wing_mass_state`](@ref), from the
