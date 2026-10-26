@@ -699,6 +699,68 @@ TASOPT.size_landing_gear!(ac)
     end
 end
 
+@testset "strut_force_compatibility hand calculations" begin
+    strut_force_compatibility = TASOPT.structures.strut_force_compatibility
+    L, EI0 = 6.0, 2.0e8   # bay length [m], constant bending stiffness [N m^2]
+    EI_const(x) = EI0
+    f_ww = L^3 / (3EI0)   # flexibility of the clamped bay at x = L for a unit vertical load
+
+    @testset "tip load: the rigid strut takes the whole load" begin
+        Q = 3.0e5
+        M0_tip(x) = Q * (L - x)
+        @test strut_force_compatibility(M0_tip, EI_const, L, 0.0) ≈ Q rtol = 1e-12
+        # M0 is proportional to (L - x), so the result does not depend on the stiffness distribution
+        @test strut_force_compatibility(M0_tip, x -> EI0 * (1 + x / L), L, 0.0) ≈ Q rtol = 1e-12
+    end
+
+    @testset "uniform load: R = 3 w L / 8" begin
+        w = 5.0e4
+        M0_uniform(x) = w * (L - x)^2 / 2
+        @test strut_force_compatibility(M0_uniform, EI_const, L, 0.0; npts = 201) ≈ 3w * L / 8 rtol = 1e-4
+        @test strut_force_compatibility(M0_uniform, EI_const, L, 0.0) ≈ 3w * L / 8 rtol = 2e-3
+    end
+
+    @testset "strut flexibility lowers the strut reaction" begin
+        Q = 3.0e5
+        M0_tip(x) = Q * (L - x)
+        R(f_strut) = strut_force_compatibility(M0_tip, EI_const, L, f_strut)
+        # R = Q f_ww / (f_ww + f_strut)
+        @test R(f_ww) ≈ Q / 2 rtol = 2e-3
+        @test R(1e6 * f_ww) < 1e-5 * Q
+        @test R(1e-6 * f_ww) ≈ Q rtol = 1e-5
+        @test R(0.1 * f_ww) > R(f_ww) > R(10 * f_ww)
+        # a downward load gives a downward reaction
+        @test strut_force_compatibility(x -> -Q * (L - x), EI_const, L, f_ww) ≈ -R(f_ww) rtol = 1e-12
+    end
+end
+
+@testset "size_wing_section! axial force in the caps" begin
+    st = TASOPT.structures
+    section = wing.outboard
+    sweep, sigfac = wing.sweep, 1.0
+    dims(d) = (d.tbweb, d.tbcap, d.Abweb, d.Abcap)
+
+    @testset "axial force is the equivalent moment M + |P| h_rms cp / 2" begin
+        d0 = st.size_wing_section!(section, sweep, sigfac)
+        h_avg, h_rms = st.get_average_sparbox_heights(section.cross_section)
+        cp = section.co * cosd(sweep)
+        P = 0.2 * section.moment / (h_rms * cp / 2)   # the axial force adds 20 % to the moment
+
+        for P_axial in (P, -P)
+            d_axial = st.size_wing_section!(section, sweep, sigfac; P_axial)
+            @test d_axial.tbcap > d0.tbcap
+            @test d_axial.tbweb == d0.tbweb
+
+            equivalent = deepcopy(section)
+            equivalent.moment = section.moment + abs(P_axial) * h_rms * cp / 2
+            d_equivalent = st.size_wing_section!(equivalent, sweep, sigfac)
+            @test d_axial.tbcap ≈ d_equivalent.tbcap rtol = 1e-12
+            @test d_axial.Abcap ≈ d_equivalent.Abcap rtol = 1e-12
+            @test d_axial.tbweb == d_equivalent.tbweb
+        end
+    end
+end
+
 @testset "fusew! property-based tests" begin
     # Helper: run fusew! on a fresh deep copy of fuselage, overriding specific load params.
     # All geometry/material fields come from the already-run `fuselage` base state all the way on the top.
