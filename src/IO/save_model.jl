@@ -229,6 +229,7 @@ function save_aircraft_model(ac::TASOPT.aircraft=TASOPT.read_aircraft_model(),
                 d_wing_strut["box_width_to_chord"] = wing.strut.box_width_to_chord
                 d_wing_strut["web_to_box_height"] = wing.strut.web_to_box_height
                 d_wing_strut["end_fixity_K"] = wing.strut.end_fixity_K
+                d_wing_strut["opt_strut_force"] = string(wing.strut.opt_strut_force)
                 d_wing_strut["weight_frac_added"] = wing.strut.weight_frac_added
             d_wing["Strut"] = d_wing_strut
         end
