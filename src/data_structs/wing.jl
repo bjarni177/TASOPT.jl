@@ -32,6 +32,8 @@ $TYPEDFIELDS
     end_fixity_K::Float64 = 1.0
     """Strut local velocity ratio"""
     local_velocity_ratio::Float64 = 0
+    """Model for the force that the strut carries"""
+    opt_strut_force::StrutForceModel.T = StrutForceModel.Compatibility
 
     # Computed geometry
     """Strut Length [m] """
@@ -163,6 +165,12 @@ $TYPEDFIELDS
     S_break::Float64 = 0
     """Bending moment at the wing break [N m]"""
     M_break::Float64 = 0
+    """Bending moment of largest magnitude along the inboard wing bay of a braced wing [N m]"""
+    M_inboard_extreme::Float64 = 0
+    """Axial force in the inboard wing from the strut, positive in tension [N]"""
+    P_axial_inboard::Float64 = 0
+    """Strut force of a braced wing, positive in tension [N]"""
+    strut_force::Float64 = 0
 end
 
 """
@@ -195,6 +203,8 @@ $TYPEDFIELDS
     governing_root::Symbol = :pullup
     """Case that sets the wing break loads"""
     governing_break::Symbol = :pullup
+    """Case with the largest strut tension (`:none` for a wing without a strut)"""
+    governing_strut::Symbol = :none
 end
 
 """
