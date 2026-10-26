@@ -314,6 +314,154 @@ mentions_legacy_strut_key(log, key) = log.level == CoreLogging.Info && occursin(
     end
 end
 
+# Wing sizing load cases in [Wing.SizingLoads.<case>] tables
+
+const sizing_load_case_names = (:pullup, :pushover, :pullup_light, :pushover_light,
+                                :taxi, :gust_up_light, :gust_down_light)
+
+"Parsed default input, with `edit!` applied to the Dict; return the aircraft and the log records."
+function read_aircraft_from_default_dict(edit!)
+    d = TASOPT.TOML.parsefile(joinpath(TASOPT.__TASOPTroot__, "../example/defaults/default_input.toml"))
+    edit!(d)
+    return read_aircraft_from_text(sprint(TASOPT.TOML.print, d))
+end
+
+"The [Wing.SizingLoads.`case`] table of the parsed input `d`, created if missing."
+sizing_load_table(d, case) =
+    get!(get!(d["Wing"], "SizingLoads", Dict{String,Any}()), string(case), Dict{String,Any}())
+
+"The inputs of load case `name` that the TOML block carries."
+function case_inputs(loads, name)
+    case = getfield(loads, name)
+    return (case.load_factor, case.mass_state, case.active, case.tail_load_scale)
+end
+
+mentions_nlift_deprecation(log) =
+    log.level == CoreLogging.Info && occursin("Nlift", log.message) && occursin("deprecat", log.message)
+
+@testset "TBW wing sizing loads TOML block" verbose=true begin
+    WingMassState = TASOPT.structures.WingMassState
+    WingSizingLoads = TASOPT.structures.WingSizingLoads
+
+    @testset "default input gives the WingSizingLoads defaults" begin
+        defaults = TASOPT.TOML.parsefile(joinpath(TASOPT.__TASOPTroot__, "../example/defaults/default_input.toml"))
+        @test defaults["Wing"]["SizingLoads"] isa AbstractDict
+        for name in sizing_load_case_names
+            @test haskey(defaults["Wing"]["SizingLoads"], string(name))
+        end
+
+        ac, _ = read_aircraft_from_default_dict(d -> nothing)
+        expected = WingSizingLoads()
+        for name in sizing_load_case_names
+            @test case_inputs(ac.wing.sizing_loads, name) == case_inputs(expected, name)
+        end
+    end
+
+    @testset "templates without [Wing.SizingLoads] give the WingSizingLoads defaults" begin
+        for file in ("default_regional.toml", "default_wide.toml")
+            ac, _ = read_aircraft_from_text(read(joinpath(TASOPT.__TASOPTroot__, "../example/defaults", file), String))
+            for name in sizing_load_case_names
+                @test case_inputs(ac.wing.sizing_loads, name) == case_inputs(WingSizingLoads(), name)
+            end
+        end
+    end
+
+    @testset "[Wing.SizingLoads] populates the load cases" begin
+        ac, _ = read_aircraft_from_default_dict() do d
+            pushover = sizing_load_table(d, :pushover)
+            pushover["active"] = true
+            pushover["load_factor"] = -1.5
+            pushover["mass_state"] = "light"
+            taxi = sizing_load_table(d, :taxi)
+            taxi["active"] = true
+            taxi["tail_load_scale"] = 0.8
+        end
+        loads = ac.wing.sizing_loads
+
+        @test loads.pushover.active
+        @test loads.pushover.load_factor == -1.5
+        @test loads.pushover.mass_state == WingMassState.Light
+        @test loads.taxi.active
+        @test loads.taxi.tail_load_scale == 0.8
+        @test loads.taxi.load_factor == -2.0
+        @test loads.taxi.mass_state == WingMassState.MTOW_MaxFuel
+
+        # cases that the input does not touch keep their defaults
+        for name in (:pullup, :pullup_light, :pushover_light, :gust_up_light, :gust_down_light)
+            @test case_inputs(loads, name) == case_inputs(WingSizingLoads(), name)
+        end
+
+        # missing keys fall back to the defaults
+        ac_missing, _ = read_aircraft_from_default_dict() do d
+            delete!(sizing_load_table(d, :pushover_light), "load_factor")
+            delete!(sizing_load_table(d, :pushover_light), "mass_state")
+        end
+        @test case_inputs(ac_missing.wing.sizing_loads, :pushover_light) ==
+              case_inputs(WingSizingLoads(), :pushover_light)
+    end
+
+    @testset "save and read reproduce the load cases exactly" begin
+        ac, _ = read_aircraft_from_default_dict() do d
+            sizing_load_table(d, :pullup)["load_factor"] = 2.6
+            sizing_load_table(d, :pushover)["active"] = true
+            sizing_load_table(d, :pushover)["mass_state"] = "mzfw"
+            sizing_load_table(d, :pullup_light)["active"] = true
+            sizing_load_table(d, :pullup_light)["load_factor"] = 2.25
+            sizing_load_table(d, :taxi)["active"] = true
+            sizing_load_table(d, :taxi)["tail_load_scale"] = 0.75
+            sizing_load_table(d, :gust_up_light)["mass_state"] = "DesignCruise"
+            sizing_load_table(d, :gust_down_light)["load_factor"] = -0.5
+        end
+
+        mktempdir() do dir
+            path = joinpath(dir, "sizing_loads_roundtrip.toml")
+            save_aircraft_model(ac, path)
+            saved = TASOPT.TOML.parsefile(path)
+
+            @test !haskey(saved["Mission"], "Nlift")
+            @test saved["Wing"]["SizingLoads"] isa AbstractDict
+            for name in sizing_load_case_names
+                table = saved["Wing"]["SizingLoads"][string(name)]
+                for key in ("load_factor", "mass_state", "active", "tail_load_scale")
+                    @test haskey(table, key)
+                end
+                for key in ("kind", "n_computed", "gust_velocity_EAS", "gust_speed_EAS")
+                    @test !haskey(table, key)
+                end
+            end
+
+            ac_reread, logs = read_aircraft_from_text(read(path, String))
+            for name in sizing_load_case_names
+                @test case_inputs(ac_reread.wing.sizing_loads, name) == case_inputs(ac.wing.sizing_loads, name)
+            end
+            @test !any(mentions_nlift_deprecation, logs)
+        end
+    end
+
+    @testset "Mission.Nlift is a deprecated alias of the pull-up load factor" begin
+        ac, logs = read_aircraft_from_default_dict() do d
+            delete!(sizing_load_table(d, :pullup), "load_factor")
+            d["Mission"]["Nlift"] = 2.7
+        end
+        @test ac.wing.sizing_loads.pullup.load_factor == 2.7
+        @test ac.parg[igNlift] == 0.0
+        @test any(mentions_nlift_deprecation, logs)
+
+        # the table wins when both are given
+        ac_both, _ = read_aircraft_from_default_dict() do d
+            sizing_load_table(d, :pullup)["load_factor"] = 2.4
+            d["Mission"]["Nlift"] = 2.7
+        end
+        @test ac_both.wing.sizing_loads.pullup.load_factor == 2.4
+    end
+
+    @testset "unknown mass_state is an error" begin
+        @test_throws Exception read_aircraft_from_default_dict() do d
+            sizing_load_table(d, :pushover)["mass_state"] = "HalfFull"
+        end
+    end
+end
+
 @testset "TBW reference input" verbose=true begin
     defaults_dir = joinpath(TASOPT.__TASOPTroot__, "../example/defaults")
     tbw_path = joinpath(defaults_dir, "default_tbw.toml")
@@ -571,25 +719,6 @@ end
         @test ac.wing.sizing_loads isa WingSizingLoads
         @test ac.wing.sizing_loads.pullup.active
         @test count(n -> getfield(ac.wing.sizing_loads, n).active, case_names) == 1
-    end
-
-    @testset "Mission.Nlift sets the pull-up load factor" begin
-        default_txt = read(joinpath(TASOPT.__TASOPTroot__, "../example/defaults/default_input.toml"), String)
-        txt = replace(default_txt, r"^([ \t]*Nlift[ \t]*=)[ \t]*[0-9.]+"m => s"\1 2.5")
-        @test txt != default_txt
-
-        ac, _ = read_aircraft_from_text(txt)
-        @test ac.wing.sizing_loads.pullup.load_factor == 2.5
-        @test ac.parg[igNlift] == 0.0
-        @test read_aircraft_from_text(default_txt)[1].wing.sizing_loads.pullup.load_factor == 3.0
-
-        mktempdir() do dir
-            path = joinpath(dir, "nlift_roundtrip.toml")
-            save_aircraft_model(ac, path)
-            @test TASOPT.TOML.parsefile(path)["Mission"]["Nlift"] == 2.5
-            ac_reread, _ = read_aircraft_from_text(read(path, String))
-            @test ac_reread.wing.sizing_loads.pullup.load_factor == 2.5
-        end
     end
 
     @testset "sizing responds to the pull-up load factor" begin
