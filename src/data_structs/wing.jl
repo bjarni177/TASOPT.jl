@@ -30,6 +30,16 @@ $TYPEDFIELDS
     web_to_box_height::Float64 = 0.75
     """Euler effective-length factor of the strut end fixity"""
     end_fixity_K::Float64 = 1.0
+    """
+    Knock-down on the minor-axis second moment of area of the strut section, ``I = \\eta\\,A d^2/4`` [-].
+    Placeholder (1.0 = ideal section, no knock-down). SUGAR Phase IV (NASA CR 20220016017, Sec 2.2.3 and 3.2.4,
+    PDF pp. 29, 42-46; Tables 12 and 16, PDF pp. 65 and 77) models the strut and jury as closed two-spar composite
+    skin boxes, not as laced trusses, and quotes no section properties or lacing efficiency. A thin-wall box
+    estimated from the Table 12/16 skin and spar masses gives I/(A d^2/4) of about 0.93-0.94 (strut) and 0.97 (jury);
+    this estimate is not a lacing efficiency. A laced truss member would be lower; valid range to be set from
+    literature review (e.g. EN 1993-1-1 Sec 6.4 built-up members, Timoshenko and Gere Ch. 2).
+    """
+    truss_inertia_efficiency::Float64 = 1.0
     """Strut local velocity ratio"""
     local_velocity_ratio::Float64 = 0
     """Model for the force that the strut carries"""
