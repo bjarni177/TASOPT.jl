@@ -833,12 +833,50 @@ end
         @test strut.axial_force ≈ strut.area * strut.material.σmax * ac.parg[igsigfac] rtol = 1e-10
     end
 
+    @testset "strut compression is recorded and does not size the strut" begin
+        compressive = (:pushover, :pushover_light, :taxi)
+        forces = [r.strut_force for r in values(sl.results)]
+        @test sl.governing_strut_compression in compressive
+        @test sl.results[sl.governing_strut_compression].strut_force == minimum(forces)
+        @test strut.axial_force_compression < 0
+
+        # tension and compression are scaled from the strut length in the plane of the strut to the real length
+        @test strut.axial_force_compression / strut.axial_force ≈ minimum(forces) / maximum(forces) rtol = 1e-8
+    end
+
     @testset "the sizing cases are evaluated and the strut has a governing case" begin
         active = Set(name for name in keys(sl.results))
         @test Set([:pullup, :pushover, :pullup_light, :pushover_light, :taxi]) == active
         @test sl.governing_strut in active
         @test sl.results[sl.governing_strut].strut_force == maximum(r.strut_force for r in values(sl.results))
         @test all(r -> abs(r.M_inboard_extreme) >= abs(r.M_root), values(sl.results))
+    end
+end
+
+@testset "strut compression of the Prescribed strut model and of a cantilever wing" verbose=true begin
+    @testset "Prescribed strut force has no compression" begin
+        ac = read_aircraft_with_wing_config("strut_braced")
+        ac.wing.strut.opt_strut_force = TASOPT.StrutForceModel.Prescribed
+        ac.wing.layout.ηs = 0.9
+        CoreLogging.with_logger(CoreLogging.NullLogger()) do
+            size_aircraft!(ac, printiter = false)
+        end
+        strut, sl = ac.wing.strut, ac.wing.sizing_loads
+        # the push-over, light and taxi cases are active and compressive, but they do not enter the strut
+        @test Set(keys(sl.results)) == Set([:pullup, :pushover, :pullup_light, :pushover_light, :taxi])
+        @test sl.results[:pushover].strut_force < 0
+        @test strut.axial_force_compression == 0
+        @test strut.axial_force > 0
+        @test strut.axial_force ≈ strut.area * strut.material.σmax * ac.parg[igsigfac] rtol = 1e-10
+    end
+
+    @testset "cantilever wing has no strut compression" begin
+        ac = CoreLogging.with_logger(CoreLogging.NullLogger()) do
+            load_default_model()
+        end
+        size_aircraft!(ac, printiter = false)
+        @test ac.wing.strut.axial_force_compression == 0
+        @test ac.wing.sizing_loads.governing_strut_compression == :none
     end
 end
 
@@ -923,6 +961,7 @@ end
         @test loads.governing_root == :pullup
         @test loads.governing_break == :pullup
         @test loads.governing_strut == :none
+        @test loads.governing_strut_compression == :none
     end
 
     @testset "WingCaseLoads holds the section loads and the strut loads" begin
@@ -1349,6 +1388,12 @@ end
             @test sl.governing_strut in case_names
             @test sl.governing_strut == case_names[argmax([forces[name] for name in case_names])]
             @test envelope.T_strut ≈ maximum(values(forces)) rtol = 1e-12
+
+            # the case with the most negative strut force governs the compression of the strut
+            @test envelope.T_strut_compression ≈ minimum(values(forces)) rtol = 1e-12
+            @test envelope.T_strut_compression < 0
+            @test sl.governing_strut_compression in case_names
+            @test sl.governing_strut_compression == case_names[argmin([forces[name] for name in case_names])]
             @test abs(envelope.P_axial) ≈ maximum(abs(results[name].P_axial_inboard) for name in case_names) rtol = 1e-12
 
             # the inboard section is sized for the largest moment and shear over the cases
@@ -1368,6 +1413,8 @@ end
         @test wing.sizing_loads.results[:pullup].strut_force == 0.0
         @test wing.sizing_loads.results[:pullup].P_axial_inboard == 0.0
         @test !haskey(envelope, :T_strut)
+        @test !haskey(envelope, :T_strut_compression)
+        @test wing.sizing_loads.governing_strut_compression == :none
     end
 end
 
