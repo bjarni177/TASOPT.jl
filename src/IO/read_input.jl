@@ -586,6 +586,19 @@ readwing(x) = read_input(x, wing_i, dwing)
 
     parg[igdxeng2wbox] = wing.layout.box_x - parg[igxeng] #TODO add this as a function of wing
 
+    # Absolute minimum cap and web thickness, applied to both wing sections. A braced wing uses the
+    # defaults below unless the user input sets the key. These braced values (1.5 mm cap, 1.0 mm web)
+    # are temporary placeholders.
+    braced_wing = _opt_wing_config != WingConfig.Cantilever
+    read_min_gauge(key, braced_default) = haskey(wing_i, key) ? Distance(wing_i[key]) :
+                                                               (braced_wing ? braced_default : 0.0)
+    min_cap_thickness = read_min_gauge("min_cap_thickness", 1.5e-3)
+    min_web_thickness = read_min_gauge("min_web_thickness", 1.0e-3)
+    for section in (wing.inboard, wing.outboard)
+        section.min_cap_thickness = min_cap_thickness
+        section.min_web_thickness = min_web_thickness
+    end
+
     ## Strut details only used if the wing is braced
     if _opt_wing_config != WingConfig.Cantilever
         strut_i = get!(wing_i, "Strut", Dict{String, Any}())
