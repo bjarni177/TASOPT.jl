@@ -255,23 +255,18 @@ function strut_force_compatibility(M0, EI, L, f_strut; npts = 21)
 end # strut_force_compatibility
 
 """
-Ultimate factor on the strut compression in the Euler buckling sizing. The tension area already carries the
-safety factor of the material allowable, but the buckling load follows from the modulus `E`, which carries
-none, so the factor is applied explicitly to the compression load.
-"""
-const strut_ultimate_compression_factor = 1.5
-
-"""
     strut_inertia_coefficient(strut)
 
 Returns the coefficient ``k`` of the minor-axis second moment of area of the strut section, ``I_{min} = k A^2``.
 
-The section is idealised as two caps of width ``c`` and thickness ``t_{oh} t_{oc} c`` separated by the depth
-``t_{oc} c``, so that ``A = 2 c^2 t_{oh} t_{oc}`` (the relation used to set the strut chord in the sizing) and
+The section is idealised as two chord members of total area ``A`` and width ``c``, thickness ``t_{oh} t_{oc} c``,
+separated by the depth ``t_{oc} c``, so that ``A = 2 c^2 t_{oh} t_{oc}`` (the relation used to set the strut chord in
+the sizing). With ideal rigid lacing between the members, ``I = A d^2/4`` with ``d = t_{oc} c``, which is reduced by the
+efficiency ``\\eta`` (`strut.truss_inertia_efficiency`) for a real truss member:
 ```math
-I_{min} = \\frac{A\\,(t_{oc} c)^2}{4} = \\frac{t_{oc}}{8\\,t_{oh}}\\,A^2
+I_{min} = \\eta\\,\\frac{A\\,(t_{oc} c)^2}{4} = \\eta\\,\\frac{t_{oc}}{8\\,t_{oh}}\\,A^2
 ```
-with the strut thickness-to-chord ratio ``t_{oc}`` (`strut.thickness_to_chord`) and the cap thickness-to-depth
+with the strut thickness-to-chord ratio ``t_{oc}`` (`strut.thickness_to_chord`) and the member thickness-to-depth
 ratio ``t_{oh}`` (`strut.wall_thickness_to_depth`).
 
 !!! details "🔃 Inputs and Outputs"
@@ -283,8 +278,11 @@ ratio ``t_{oh}`` (`strut.wall_thickness_to_depth`).
 """
 function strut_inertia_coefficient(strut)
     # TODO: true box for truss braced wing needs to be implemented.
-    # The section is idealised as two caps (see above); `box_width_to_chord` and `web_to_box_height` are not used.
-    return strut.thickness_to_chord / (8.0 * strut.wall_thickness_to_depth)
+    # `box_width_to_chord` and `web_to_box_height` are not used.
+    # `truss_inertia_efficiency`: placeholder (1.0 = ideal section, no knock-down). SUGAR Phase IV (NASA CR
+    # 20220016017) models the strut as a closed two-spar box, not a laced truss, and quotes no lacing efficiency;
+    # see the docstring of the `Strut` field.
+    return strut.truss_inertia_efficiency * strut.thickness_to_chord / (8.0 * strut.wall_thickness_to_depth)
 end # strut_inertia_coefficient
 
 """
@@ -312,8 +310,8 @@ Returns the smallest strut area for which the Euler buckling load
 ```math
 P_{cr} = \\frac{\\pi^2 E I_{min}}{(K l)^2}, \\qquad I_{min} = k A^2
 ```
-carries the ultimate compression, ``P_{cr} = f_u |P_c|`` with the factor ``f_u`` of
-`strut_ultimate_compression_factor` (1.5), the effective-length factor ``K`` (`strut.end_fixity_K`) and the
+carries the ultimate compression, ``P_{cr} = f_u |P_c|`` with the ultimate factor ``f_u`` equal to the safety factor
+of the strut material (`strut.material.safety_factor`), the effective-length factor ``K`` (`strut.end_fixity_K`) and the
 strut length ``l``. Solving for the area gives
 ```math
 A = \\sqrt{\\frac{f_u\\,|P_c|\\,(K l)^2}{\\pi^2 E\\,k}}
@@ -331,7 +329,9 @@ The area is zero if there is no compression. See [`strut_bending_stiffness`](@re
 """
 function strut_buckling_area(strut, P_compression, length)
     P_compression == 0.0 && return 0.0
-    P_ultimate = strut_ultimate_compression_factor * abs(P_compression)
+    # The tension area uses σmax = YTS/(max_avg_stress*safety_factor). The buckling load follows from E, which
+    # carries no factor, so the safety factor (not the max_avg_stress peak-stress factor) multiplies the compression.
+    P_ultimate = strut.material.safety_factor * abs(P_compression)
     return sqrt(P_ultimate * (strut.end_fixity_K * length)^2 /
                 (pi^2 * strut.material.E * strut_inertia_coefficient(strut)))
 end # strut_buckling_area
@@ -801,7 +801,7 @@ Also returns the material gauges, torsional and bending stiffness. Formerly, `ge
         and `P_axial` from [`evaluate_wing_sizing_cases!`](@ref), and is used only if `wing.strut.opt_strut_force` is `Compatibility`:
         the inboard section is then sized for the envelope shear, moment and axial force, and the strut for the envelope
         tension `T_strut` and, through `T_strut_compression` (recorded in `wing.strut.axial_force_compression`), for Euler buckling:
-        the strut area is the larger of the tension area and [`strut_buckling_area`](@ref), and `wing.strut.EI_min`,
+        the strut area is the larger of the yield area, from the larger of the tension and the compression, and [`strut_buckling_area`](@ref), and `wing.strut.EI_min`,
         `wing.strut.buckling_load` and `wing.strut.sizing_criterion` are set. With the `Prescribed` strut force model, or if no envelope is given, a wing with `has_strut`
         is sized for the outboard loads of the strut-attach station and the prescribed strut force, and the envelope is ignored.
         If `nothing` (default), the computed loads are used.
@@ -895,13 +895,15 @@ function wing_weights!(wing, po, gammat, gammas,
         # strut length lsp, whereas the strut force of the load cases is in the plane, along the length ls.
         wing.strut.axial_force_compression = Tstrut_compression*lsp/ls
         wing.strut.length = lsp
-        # The strut is sized by the larger of the tension area and the Euler buckling area
-        A_tension = Tstrutp/(wing.strut.material.σmax * sigfac)
+        # The strut is sized by the larger of the yield area, from the larger of the tension and the
+        # compression, and the Euler buckling area
+        A_yield = max(Tstrutp, abs(wing.strut.axial_force_compression))/(wing.strut.material.σmax * sigfac)
         A_buckling = strut_buckling_area(wing.strut, wing.strut.axial_force_compression, lsp)
-        wing.strut.area = max(A_tension, A_buckling)
+        wing.strut.area = max(A_yield, A_buckling)
         wing.strut.EI_min = strut_bending_stiffness(wing.strut, wing.strut.area)
         wing.strut.buckling_load = pi^2 * wing.strut.EI_min / (wing.strut.end_fixity_K * lsp)^2
-        wing.strut.sizing_criterion = A_buckling > A_tension ? :buckling : :tension
+        # `:tension` also covers the yield in compression, which sets the area in the same way
+        wing.strut.sizing_criterion = A_buckling > A_yield ? :buckling : :tension
         wing.strut.weight   = 2.0*wing.strut.material.ρ*gee*wing.strut.area*lsp
         wing.strut.dxW = wing.strut.weight * 0.25*wing.layout.span*(etas-etao) * sinL/cosL
     end
