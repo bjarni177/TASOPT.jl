@@ -281,6 +281,9 @@ function strut_inertia_coefficient(strut)
     # `box_width_to_chord` and `web_to_box_height` are not used.
     # `truss_inertia_efficiency`: placeholder (1.0 = ideal section, no knock-down).
     # see the docstring of the `Strut` field.
+    # TODO: Review sugar phase II and verify the 0.88-0.94 value.
+    # Sources: SUGAR Phase IV (NASA CR 20220016017) and Phase II (NASA CR-2015-218704 Vol. I): closed composite box,
+    # box-section efficiency I/(A d^2/4) ~ 0.88-0.94 (not a lacing knock-down).
     return strut.truss_inertia_efficiency * strut.thickness_to_chord / (8.0 * strut.wall_thickness_to_depth)
 end # strut_inertia_coefficient
 

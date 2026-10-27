@@ -38,6 +38,10 @@ $TYPEDFIELDS
     estimated from the Table 12/16 skin and spar masses gives I/(A d^2/4) of about 0.93-0.94 (strut) and 0.97 (jury);
     this estimate is not a lacing efficiency. A laced truss member would be lower; valid range to be set from
     literature review (e.g. EN 1993-1-1 Sec 6.4 built-up members, Timoshenko and Gere Ch. 2).
+    Placeholder; SUGAR Phase II (NASA CR-2015-218704 Vol. I) §2.1.8.7/§2.2.3 (PDF p.127, 156) and Figs 2.124–2.125
+    (PDF p.133): strut is a closed composite box (spars at 14.8 %/70 % chord, depth = 0.3·box chord);
+    I_min/(A d²/4) ≈ 0.94 at max chord, ≈ 0.88–0.90 length-weighted (digitised, derived). This is box-section
+    efficiency, not a lacing knock-down; no lacing efficiency is published.
     """
     truss_inertia_efficiency::Float64 = 1.0
     """Strut local velocity ratio"""
