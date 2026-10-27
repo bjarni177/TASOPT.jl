@@ -279,11 +279,11 @@ ratio ``t_{oh}`` (`strut.wall_thickness_to_depth`).
 function strut_inertia_coefficient(strut)
     # TODO: true box for truss braced wing needs to be implemented.
     # `box_width_to_chord` and `web_to_box_height` are not used.
-    # `truss_inertia_efficiency`: placeholder (1.0 = ideal section, no knock-down).
+    # `truss_inertia_efficiency`: default 0.92, SUGAR box-section estimate (upper bound for a laced truss).
     # see the docstring of the `Strut` field.
     # TODO: Review sugar phase II and verify the 0.88-0.94 value.
     # Sources: SUGAR Phase IV (NASA CR 20220016017) and Phase II (NASA CR-2015-218704 Vol. I): closed composite box,
-    # box-section efficiency I/(A d^2/4) ~ 0.88-0.94 (not a lacing knock-down).
+    # box-section efficiency I/(A d^2/4) ~ 0.88-0.97 (not a lacing knock-down).
     return strut.truss_inertia_efficiency * strut.thickness_to_chord / (8.0 * strut.wall_thickness_to_depth)
 end # strut_inertia_coefficient
 
@@ -334,9 +334,104 @@ function strut_buckling_area(strut, P_compression, length)
     # The tension area uses σmax = YTS/(max_avg_stress*safety_factor). The buckling load follows from E, which
     # carries no factor, so the safety factor (not the max_avg_stress peak-stress factor) multiplies the compression.
     P_ultimate = strut.material.safety_factor * abs(P_compression)
-    return sqrt(P_ultimate * (strut.end_fixity_K * length)^2 /
-                (pi^2 * strut.material.E * strut_inertia_coefficient(strut)))
+    return euler_buckling_area(P_ultimate, strut.material.E, strut_inertia_coefficient(strut), strut.end_fixity_K, length)
 end # strut_buckling_area
+
+"""
+    euler_buckling_area(P_ultimate, E, k, K, length)
+
+Returns the smallest area ``A`` of a member of second moment of area ``I_{min} = k A^2`` for which the Euler buckling load
+``P_{cr} = \\pi^2 E I_{min} / (K l)^2`` equals the ultimate compression `P_ultimate`,
+```math
+A = \\sqrt{\\frac{P_{ult}\\,(K l)^2}{\\pi^2 E\\,k}}
+```
+
+!!! details "🔃 Inputs and Outputs"
+    **Inputs:**
+    - `P_ultimate::Float64`: Ultimate compression force, positive [N].
+    - `E::Float64`: Young's modulus [Pa].
+    - `k::Float64`: Coefficient of the second moment of area, ``I_{min}/A^2`` [-].
+    - `K::Float64`: Effective-length factor [-].
+    - `length::Float64`: Member length [m].
+
+    **Outputs:**
+    - `A::Float64`: Area required against Euler buckling [m²].
+"""
+function euler_buckling_area(P_ultimate, E, k, K, length)
+    return sqrt(P_ultimate * (K * length)^2 / (pi^2 * E * k))
+end # euler_buckling_area
+
+"""
+    euler_buckling_load(EI, K, length)
+
+Returns the Euler buckling load ``P_{cr} = \\pi^2 EI / (K l)^2`` [N] of a member of bending stiffness `EI` [N m²],
+effective-length factor `K` [-] and length `length` [m].
+"""
+function euler_buckling_load(EI, K, length)
+    return pi^2 * EI / (K * length)^2
+end # euler_buckling_load
+
+"""
+    strut_buckling_length(strut_length, eta_strut)
+    strut_buckling_length(strut_length, ::Nothing)
+
+Returns the length of the main strut that is used for its Euler buckling. A vertical jury strut at the fraction
+`eta_strut` of the strut length, from the fuselage end, holds the strut laterally, so the strut buckles over the longer of
+its two parts, ``\\max(\\eta_{strut}, 1 - \\eta_{strut})\\,l``. Without a jury strut (`nothing`), it is the full strut length.
+
+!!! details "🔃 Inputs and Outputs"
+    **Inputs:**
+    - `strut_length::Float64`: Strut length [m].
+    - `eta_strut::Union{Nothing,Float64}`: Position of the jury strut along the strut, as a fraction of the strut length, or `nothing`.
+
+    **Outputs:**
+    - `l_buckling::Float64`: Strut length for buckling [m].
+"""
+strut_buckling_length(strut_length, eta_strut) = max(eta_strut, 1.0 - eta_strut) * strut_length
+strut_buckling_length(strut_length, ::Nothing) = strut_length
+
+"""
+Jury strut axial load as a fraction of the compression of the main strut [-].
+A conventional bracing-force fraction for a member that only restrains the main strut laterally; an assumption, not an input.
+"""
+const jury_load_fraction = 0.02
+
+"""
+    size_jury!(wing, etao, etas, sigfac)
+
+Sizes the vertical jury strut `wing.jury` of a truss-braced wing and sets its geometry, axial force, area, buckling load
+and weight. The jury is a lateral support only, so its load is the fraction `jury_load_fraction` of the compression
+of the main strut (`wing.strut.axial_force_compression`), taken as compression. Its length is ``z (1 - \\eta_{strut})`` with the
+strut height ``z`` (`wing.strut.z`) and its wing attachment is ``\\eta_o + \\eta_{strut} (\\eta_s - \\eta_o)``.
+The area is the larger of the yield area, from the jury material `σmax`, and the Euler buckling area for a pinned member
+(``K = 1``) of the jury material and the section idealisation of the main strut ([`strut_inertia_coefficient`](@ref)),
+with the ultimate factor equal to the jury material safety factor.
+The weight is the bare member weight of both wings, without `weight_frac_added`, and is not yet included in the aircraft weight.
+
+!!! details "🔃 Inputs and Outputs"
+    **Inputs:**
+    - `wing::TASOPT.structures.Wing`: Wing structure, with the main strut already sized.
+    - `etao::Float64`: Non-dimensional span coordinate of the wing root station.
+    - `etas::Float64`: Non-dimensional span coordinate of the strut attachment.
+    - `sigfac::Float64`: Stress Factor.
+"""
+function size_jury!(wing, etao, etas, sigfac)
+    jury, strut = wing.jury, wing.strut
+
+    jury.eta_wing = etao + jury.eta_strut * (etas - etao)
+    jury.length = strut.z * (1.0 - jury.eta_strut) # only correct if the wing and truss/strut have the same sweep and are in the same plane. 3D effects on length missing
+    jury.axial_force = -jury_load_fraction * abs(strut.axial_force_compression)
+
+    k = strut_inertia_coefficient(strut)
+    A_yield = abs(jury.axial_force) / (jury.material.σmax * sigfac)
+    A_buckling = euler_buckling_area(jury.material.safety_factor * abs(jury.axial_force), jury.material.E, k, 1.0, jury.length)
+    jury.area = max(A_yield, A_buckling)
+    jury.buckling_load = euler_buckling_load(jury.material.E * k * jury.area^2, 1.0, jury.length)
+
+    # Not yet included in the aircraft weight build-up; weight_frac_added is not applied yet and dxW is left at zero
+    jury.weight = 2.0 * jury.material.ρ * gee * jury.area * jury.length
+    return nothing
+end # size_jury!
 
 """
     unbraced_inboard_loads(wing, po, gammas, Nload, We, neinn, dyeinn, x)
@@ -769,7 +864,7 @@ end # wing_mass_state
 
 """
     wing_weights!(wing, po, gammat, gammas, 
-       Nload, We, neout, dyeout, neinn, dyeinn, sigfac, rhofuel; n_wings=2.0, has_strut=false,
+       Nload, We, neout, dyeout, neinn, dyeinn, sigfac, rhofuel; n_wings=2.0, has_strut=false, has_jury=false,
        design_wing_fuel=nothing, has_wing_fuel=false, has_centerbox_fuel=false, section_loads_envelope=nothing)
 
 Calculates Wing or Tail loads, stresses, weights of individual wing sections.
@@ -791,6 +886,9 @@ Also returns the material gauges, torsional and bending stiffness. Formerly, `ge
     - `rhofuel::Float64`: Density of the fuel.
     - `n_wings::Int64`: Number of total wings (1 for Vtail).
     - `has_strut::Bool`: Whether the wing is braced by a strut (`false` for a cantilever wing).
+    - `has_jury::Bool`: Whether the strut has a vertical jury strut (truss-braced wing), only used with `has_strut`. The jury strut is a
+        lateral support: it shortens the buckling length of the strut, see `strut_buckling_length`, and is sized by `size_jury!`.
+        It does not change the wing loads or the strut force.
     - `design_wing_fuel::Union{Nothing,Float64}`: Fuel weight carried at the design point [N]. If given (not `nothing`), the panel
         weights `wing.inboard.weight`, `wing.outboard.weight` and moments `wing.inboard.dyW`, `wing.outboard.dyW` are updated with the
         panel structure weight (including added weight) plus the wing fuel weight, scaled by the fuel fraction `design_wing_fuel / Wfmax`.
@@ -811,7 +909,7 @@ Also returns the material gauges, torsional and bending stiffness. Formerly, `ge
 See [Geometry](@ref geometry),  [Wing/Tail Structures](@ref wingtail), and Section 2.7  of the [TASOPT Technical Description](@ref dreladocs). 
 """
 function wing_weights!(wing, po, gammat, gammas,
-       Nload, We, neout, dyeout, neinn, dyeinn, sigfac, rhofuel; n_wings=2.0, has_strut=false,
+       Nload, We, neout, dyeout, neinn, dyeinn, sigfac, rhofuel; n_wings=2.0, has_strut=false, has_jury=false,
        design_wing_fuel=nothing, has_wing_fuel=false, has_centerbox_fuel=false, section_loads_envelope=nothing)
 
     tauweb = wing.inboard.webs.material.τmax * sigfac
@@ -900,14 +998,18 @@ function wing_weights!(wing, po, gammat, gammas,
         # The strut is sized by the larger of the yield area, from the larger of the tension and the
         # compression, and the Euler buckling area
         A_yield = max(Tstrutp, abs(wing.strut.axial_force_compression))/(wing.strut.material.σmax * sigfac)
-        A_buckling = strut_buckling_area(wing.strut, wing.strut.axial_force_compression, lsp)
+        # A vertical jury strut shortens the buckling length of the strut
+        l_buckling = strut_buckling_length(lsp, has_jury ? wing.jury.eta_strut : nothing)
+        A_buckling = strut_buckling_area(wing.strut, wing.strut.axial_force_compression, l_buckling)
         wing.strut.area = max(A_yield, A_buckling)
         wing.strut.EI_min = strut_bending_stiffness(wing.strut, wing.strut.area)
-        wing.strut.buckling_load = pi^2 * wing.strut.EI_min / (wing.strut.end_fixity_K * lsp)^2
+        wing.strut.buckling_load = euler_buckling_load(wing.strut.EI_min, wing.strut.end_fixity_K, l_buckling)
         # `:tension` also covers the yield in compression, which sets the area in the same way
         wing.strut.sizing_criterion = A_buckling > A_yield ? :buckling : :tension
         wing.strut.weight   = 2.0*wing.strut.material.ρ*gee*wing.strut.area*lsp
         wing.strut.dxW = wing.strut.weight * 0.25*wing.layout.span*(etas-etao) * sinL/cosL
+        # The jury weight is not yet included in the aircraft weight build-up
+        has_jury && size_jury!(wing, etao, etas, sigfac)
     end
 
     Abfuels = calc_sparbox_internal_area(wing.inboard.cross_section.width_to_chord,
