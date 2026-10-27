@@ -175,6 +175,7 @@ const strut_block_fields = (
     box_width_to_chord = :box_width_to_chord,
     web_to_box_height = :web_to_box_height,
     end_fixity_K = :end_fixity_K,
+    truss_inertia_efficiency = :truss_inertia_efficiency,
     weight_frac_added = :weight_frac_added,
 )
 
@@ -195,6 +196,7 @@ const custom_strut_block = """
     box_width_to_chord = 0.45
     web_to_box_height = 0.7
     end_fixity_K = 0.8
+    truss_inertia_efficiency = 0.6
     weight_frac_added = 0.5
 """
 
@@ -225,6 +227,7 @@ mentions_legacy_strut_key(log, key) = log.level == CoreLogging.Info && occursin(
         box_width_to_chord = 0.45,
         web_to_box_height = 0.7,
         end_fixity_K = 0.8,
+        truss_inertia_efficiency = 0.6,
         weight_frac_added = 0.5,
     )
 
@@ -275,6 +278,7 @@ mentions_legacy_strut_key(log, key) = log.level == CoreLogging.Info && occursin(
         @test strut.box_width_to_chord == 0.5
         @test strut.web_to_box_height == 0.75
         @test strut.end_fixity_K == 1.0
+        @test strut.truss_inertia_efficiency == 1.0
         @test strut.weight_frac_added == 0.60
         @test !any(r -> any(key -> mentions_legacy_strut_key(r, key), keys(legacy_flat_strut_keys)), logs)
 
@@ -684,6 +688,7 @@ end
             @test 0 < wing.strut.wall_thickness_to_depth < 1
             @test 0 < wing.strut.web_to_box_height < 1
             @test wing.strut.end_fixity_K > 0
+            @test wing.strut.truss_inertia_efficiency > 0
         end
 
         @testset "unrelated inputs stay as in default_input.toml" begin
@@ -738,6 +743,7 @@ end
         @test default_strut.box_width_to_chord == 0.5
         @test default_strut.web_to_box_height == 0.75
         @test default_strut.end_fixity_K == 1.0
+        @test default_strut.truss_inertia_efficiency == 1.0
         @test default_strut.dihedral == 0
         @test default_strut.axial_force_compression == 0
         @test default_strut.buckling_load == 0
@@ -881,7 +887,67 @@ end
     end
 end
 
-# Euler buckling sizing of the strut: A = max(tension area, buckling area)
+# Stress and safety factors of the structural materials are kept in StructuralAlloy
+
+@testset "structural material factors round trip through save and read" verbose=true begin
+    @testset "StructuralAlloy keeps its factors" begin
+        alloy = StructuralAlloy("TASOPT-Al", max_avg_stress = 1.2, safety_factor = 1.7)
+        @test alloy.max_avg_stress == 1.2
+        @test alloy.safety_factor == 1.7
+        @test alloy.σmax ≈ alloy.YTS / 1.2 / 1.7
+        @test StructuralAlloy("TASOPT-Al").max_avg_stress == 1.1
+        @test StructuralAlloy("TASOPT-Al").safety_factor == 1.5
+    end
+
+    material_getters = (
+        caps = ac -> ac.wing.inboard.caps.material,
+        webs = ac -> ac.wing.inboard.webs.material,
+        strut = ac -> ac.wing.strut.material,
+        skin = ac -> ac.fuselage.skin.material,
+        cone = ac -> ac.fuselage.cone.material,
+        bending = ac -> ac.fuselage.bendingmaterial_h.material,
+        floor = ac -> ac.fuselage.floor.material,
+    )
+    # distinct factors per material, which no combined value could reproduce
+    factors = Dict(name => (1.2 + 0.01i, 1.7 + 0.01i) for (i, name) in enumerate(keys(material_getters)))
+
+    ac, _ = read_aircraft_from_default_dict() do d
+        for (name, (max_avg, safety)) in factors
+            d["Structures"]["$(name)_max_avg_stress"] = max_avg
+            d["Structures"]["$(name)_safety_factor"] = safety
+        end
+    end
+
+    @testset "the input keys set the factors of each material" begin
+        for (name, getter) in pairs(material_getters)
+            material = getter(ac)
+            max_avg, safety = factors[name]
+            @test material.max_avg_stress == max_avg
+            @test material.safety_factor == safety
+            @test material.σmax ≈ material.YTS / max_avg / safety
+        end
+    end
+
+    @testset "save and read reproduce the factors exactly" begin
+        mktempdir() do dir
+            path = joinpath(dir, "material_factors_roundtrip.toml")
+            save_aircraft_model(ac, path)
+            saved = TASOPT.TOML.parsefile(path)["Structures"]
+            ac_reread, _ = read_aircraft_from_text(read(path, String))
+            for (name, getter) in pairs(material_getters)
+                max_avg, safety = factors[name]
+                @test saved["$(name)_max_avg_stress"] == max_avg
+                @test saved["$(name)_safety_factor"] == safety
+                @test getter(ac_reread).max_avg_stress == max_avg
+                @test getter(ac_reread).safety_factor == safety
+                @test getter(ac_reread).σmax ≈ getter(ac).σmax rtol = 1e-14
+            end
+        end
+    end
+end
+
+# Euler buckling sizing of the strut: A = max(yield area, buckling area), with the yield area from the larger of
+# the tension and the compression
 
 @testset "strut Euler buckling sizing" verbose=true begin
     st = TASOPT.structures
@@ -894,20 +960,43 @@ end
         strut.end_fixity_K = 1.0
         k = 0.15 / (8 * 0.05)   # I_min = k A^2 for two caps of width c, thickness toh*toc*c and depth toc*c
         l, Pc = 16.0, -3.0e5
+        fu = strut.material.safety_factor   # ultimate factor on the compression
 
         @test st.strut_bending_stiffness(strut, 0.004) ≈ E * k * 0.004^2 rtol = 1e-12
         @test st.strut_bending_stiffness(strut, 0.0) == 0
 
         area = st.strut_buckling_area(strut, Pc, l)
-        @test area ≈ sqrt(1.5 * abs(Pc) * l^2 / (pi^2 * E * k)) rtol = 1e-12
+        @test area ≈ sqrt(fu * abs(Pc) * l^2 / (pi^2 * E * k)) rtol = 1e-12
         # round trip: the Euler load of that area is the ultimate compression
-        @test pi^2 * st.strut_bending_stiffness(strut, area) / (strut.end_fixity_K * l)^2 ≈ 1.5 * abs(Pc) rtol = 1e-10
+        @test pi^2 * st.strut_bending_stiffness(strut, area) / (strut.end_fixity_K * l)^2 ≈ fu * abs(Pc) rtol = 1e-10
 
         strut.end_fixity_K = 2.0
-        @test pi^2 * st.strut_bending_stiffness(strut, area) / (strut.end_fixity_K * l)^2 ≈ 1.5 * abs(Pc) / 4 rtol = 1e-10
+        @test pi^2 * st.strut_bending_stiffness(strut, area) / (strut.end_fixity_K * l)^2 ≈ fu * abs(Pc) / 4 rtol = 1e-10
         @test st.strut_buckling_area(strut, Pc, l) ≈ 2 * area rtol = 1e-12
 
         @test st.strut_buckling_area(strut, 0.0, l) == 0.0
+    end
+
+    @testset "the strut safety factor is the ultimate factor of the buckling area" begin
+        strut = st.Strut()
+        strut.thickness_to_chord = 0.15
+        strut.wall_thickness_to_depth = 0.05
+        area_15 = st.strut_buckling_area(strut, -3.0e5, 16.0)
+        strut.material = StructuralAlloy("TASOPT-Al"; safety_factor = 2.0)
+        @test st.strut_buckling_area(strut, -3.0e5, 16.0) ≈ sqrt(2.0 / 1.5) * area_15 rtol = 1e-12
+    end
+
+    @testset "truss_inertia_efficiency scales the bending stiffness and the buckling area" begin
+        strut = st.Strut()
+        strut.thickness_to_chord = 0.15
+        strut.wall_thickness_to_depth = 0.05
+        EI_1 = st.strut_bending_stiffness(strut, 0.004)
+        area_1 = st.strut_buckling_area(strut, -3.0e5, 16.0)
+        @test EI_1 ≈ E * 0.15 / (8 * 0.05) * 0.004^2 rtol = 1e-12
+
+        strut.truss_inertia_efficiency = 0.5
+        @test st.strut_bending_stiffness(strut, 0.004) ≈ 0.5 * EI_1 rtol = 1e-12
+        @test st.strut_buckling_area(strut, -3.0e5, 16.0) ≈ sqrt(2) * area_1 rtol = 1e-12
     end
 
     # Size the strut-braced aircraft with the compatibility strut force; `edit!` changes the strut first.
@@ -922,30 +1011,34 @@ end
         end
         return ac
     end
-    tension_area(ac) = ac.wing.strut.axial_force / (ac.wing.strut.material.σmax * ac.parg[igsigfac])
+    # the strut yields in the larger of the tension and the compression
+    yield_area(ac) = max(ac.wing.strut.axial_force, abs(ac.wing.strut.axial_force_compression)) /
+                     (ac.wing.strut.material.σmax * ac.parg[igsigfac])
 
-    @testset "sized strut satisfies tension and buckling and records the governing criterion" begin
+    @testset "sized strut satisfies yield and buckling and records the governing criterion" begin
         ac = size_braced()
         strut = ac.wing.strut
         A_buckling = st.strut_buckling_area(strut, strut.axial_force_compression, strut.length)
 
         @test strut.axial_force_compression < 0
-        @test strut.area >= tension_area(ac) * (1 - 1e-8)
+        @test strut.area >= yield_area(ac) * (1 - 1e-8)
         @test strut.area >= A_buckling * (1 - 1e-8)
-        @test strut.area ≈ max(tension_area(ac), A_buckling) rtol = 1e-8
-        @test strut.sizing_criterion === (A_buckling > tension_area(ac) ? :buckling : :tension)
+        @test strut.area ≈ max(yield_area(ac), A_buckling) rtol = 1e-8
+        @test strut.sizing_criterion === (A_buckling > yield_area(ac) ? :buckling : :tension)
         @test strut.EI_min ≈ st.strut_bending_stiffness(strut, strut.area) rtol = 1e-10
         @test strut.buckling_load ≈ pi^2 * strut.EI_min / (strut.end_fixity_K * strut.length)^2 rtol = 1e-10
-        @test strut.buckling_load >= 1.5 * abs(strut.axial_force_compression) * (1 - 1e-8)
+        @test strut.buckling_load >= strut.material.safety_factor * abs(strut.axial_force_compression) * (1 - 1e-8)
+        @test strut.area >= abs(strut.axial_force_compression) / (strut.material.σmax * ac.parg[igsigfac]) * (1 - 1e-8)
+        @test strut.area >= strut.axial_force / (strut.material.σmax * ac.parg[igsigfac]) * (1 - 1e-8)
     end
 
     @testset "a slender strut is governed by buckling" begin
         ac = size_braced(strut -> strut.end_fixity_K = 2.0)   # buckling area about 9.6 times the tension area
         strut = ac.wing.strut
         @test strut.sizing_criterion === :buckling
-        @test strut.area > 1.1 * tension_area(ac)
+        @test strut.area > 1.1 * yield_area(ac)
         @test strut.area ≈ st.strut_buckling_area(strut, strut.axial_force_compression, strut.length) rtol = 1e-8
-        @test strut.buckling_load ≈ 1.5 * abs(strut.axial_force_compression) rtol = 1e-8
+        @test strut.buckling_load ≈ strut.material.safety_factor * abs(strut.axial_force_compression) rtol = 1e-8
 
         # a larger area makes a heavier strut
         stocky = size_braced(strut -> strut.end_fixity_K = 0.1).wing.strut
@@ -956,10 +1049,50 @@ end
         ac = size_braced(strut -> strut.end_fixity_K = 0.1)   # buckling area about 0.48 times the tension area
         strut = ac.wing.strut
         @test strut.sizing_criterion === :tension
-        @test strut.area ≈ tension_area(ac) rtol = 1e-8
+        @test strut.area ≈ yield_area(ac) rtol = 1e-8
         @test strut.area > 1.1 * st.strut_buckling_area(strut, strut.axial_force_compression, strut.length)
         @test strut.axial_force ≈ strut.area * strut.material.σmax * ac.parg[igsigfac] rtol = 1e-10
-        @test strut.buckling_load > 1.5 * abs(strut.axial_force_compression)
+        @test strut.buckling_load > strut.material.safety_factor * abs(strut.axial_force_compression)
+    end
+
+    @testset "the compressive yield sets the area when the compression exceeds the tension" begin
+        # |P_c| is about 0.35 times the tension for the default sizing cases, so a heavier push-over case
+        # (load factor -4, |P_c| about 1.4 times the tension at K = 0.1) is used to make the compression larger
+        ac = read_aircraft_with_wing_config("strut_braced")
+        ac.wing.layout.ηs = 0.9
+        ac.wing.strut.end_fixity_K = 0.1
+        ac.wing.sizing_loads.pushover.load_factor = -4.0
+        CoreLogging.with_logger(CoreLogging.NullLogger()) do
+            size_aircraft!(ac, printiter = false)
+        end
+        strut = ac.wing.strut
+        σ_allowable = strut.material.σmax * ac.parg[igsigfac]
+        @test abs(strut.axial_force_compression) > strut.axial_force
+        @test strut.sizing_criterion === :tension
+        @test strut.area ≈ abs(strut.axial_force_compression) / σ_allowable rtol = 1e-8
+        @test strut.area > strut.axial_force / σ_allowable
+        @test strut.area > st.strut_buckling_area(strut, strut.axial_force_compression, strut.length)
+    end
+
+    @testset "the strut safety factor of the input sets the ultimate factor" begin
+        ac = size_braced(strut -> strut.material = StructuralAlloy("TASOPT-Al", max_avg_stress = 1.1, safety_factor = 2.0))
+        strut = ac.wing.strut
+        @test strut.material.safety_factor == 2.0
+        @test strut.sizing_criterion === :buckling
+        @test strut.buckling_load >= 2.0 * abs(strut.axial_force_compression) * (1 - 1e-8)
+        @test strut.buckling_load ≈ 2.0 * abs(strut.axial_force_compression) rtol = 1e-8
+    end
+
+    @testset "a lower truss_inertia_efficiency enlarges a strut governed by buckling" begin
+        full = size_braced().wing.strut
+        ac_half = size_braced(strut -> strut.truss_inertia_efficiency = 0.5)
+        half = ac_half.wing.strut
+        @test full.sizing_criterion === :buckling
+        @test half.sizing_criterion === :buckling
+        @test half.area > full.area
+        @test half.weight > full.weight
+        @test half.EI_min ≈ st.strut_bending_stiffness(half, half.area) rtol = 1e-10
+        @test half.buckling_load ≈ half.material.safety_factor * abs(half.axial_force_compression) rtol = 1e-8
     end
 
     @testset "Prescribed strut force is sized by tension only" begin
