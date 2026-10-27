@@ -622,6 +622,7 @@ readwing(x) = read_input(x, wing_i, dwing)
         wing.strut.box_width_to_chord = readstrut("box_width_to_chord")
         wing.strut.web_to_box_height = readstrut("web_to_box_height")
         wing.strut.end_fixity_K = readstrut("end_fixity_K")
+        wing.strut.truss_inertia_efficiency = readstrut("truss_inertia_efficiency")
         wing.strut.weight_frac_added = readstrut("weight_frac_added")
 
         # If the template lacks the key, the Strut() default is kept.
