@@ -636,6 +636,13 @@ readwing(x) = read_input(x, wing_i, dwing)
         wing.strut.opt_strut_force = strut_force_models[i_model]
     end
 
+    ## Jury strut details only used if the wing is truss braced
+    # If the table or the key is missing, the JuryStrut() default is kept.
+    if _opt_wing_config == WingConfig.TrussBraced
+        jury_i = get(wing_i, "Jury", Dict{String, Any}())
+        wing.jury.eta_strut = get(jury_i, "eta_strut", wing.jury.eta_strut)
+    end
+
     ## Wing sizing load cases, one [Wing.SizingLoads.<case>] table per case.
     # If the template lacks the table or a key, the WingSizingLoads() defaults are kept.
     loads_i = get!(wing_i, "SizingLoads", Dict{String, Any}())
