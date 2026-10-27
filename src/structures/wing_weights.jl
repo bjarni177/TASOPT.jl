@@ -279,8 +279,7 @@ ratio ``t_{oh}`` (`strut.wall_thickness_to_depth`).
 function strut_inertia_coefficient(strut)
     # TODO: true box for truss braced wing needs to be implemented.
     # `box_width_to_chord` and `web_to_box_height` are not used.
-    # `truss_inertia_efficiency`: placeholder (1.0 = ideal section, no knock-down). SUGAR Phase IV (NASA CR
-    # 20220016017) models the strut as a closed two-spar box, not a laced truss, and quotes no lacing efficiency;
+    # `truss_inertia_efficiency`: placeholder (1.0 = ideal section, no knock-down).
     # see the docstring of the `Strut` field.
     return strut.truss_inertia_efficiency * strut.thickness_to_chord / (8.0 * strut.wall_thickness_to_depth)
 end # strut_inertia_coefficient
