@@ -549,6 +549,111 @@ mentions_nlift_deprecation(log) =
     end
 end
 
+const braced_min_cap_thickness = 1.5e-3 # [m]
+const braced_min_web_thickness = 1.0e-3 # [m]
+const wing_config_names = ("cantilever", "strut_braced", "truss_braced")
+
+"Aircraft read from the default input for `config`, with the minimum gauge keys removed from the user input and `edit!` applied to the Dict."
+function read_aircraft_with_gauge_inputs(edit!, config)
+    return first(read_aircraft_from_default_dict() do d
+        d["Options"]["wing_config"] = config
+        delete!(d["Wing"], "min_cap_thickness")
+        delete!(d["Wing"], "min_web_thickness")
+        edit!(d)
+    end)
+end
+
+read_aircraft_with_gauge_inputs(config) = read_aircraft_with_gauge_inputs(d -> nothing, config)
+
+"`(min_cap_thickness, min_web_thickness)` of a wing section."
+gauge_floors(section) = (section.min_cap_thickness, section.min_web_thickness)
+
+@testset "TBW minimum wing gauge" verbose=true begin
+    @testset "wing sections default to no floor" begin
+        @test gauge_floors(TASOPT.structures.WingSection()) == (0.0, 0.0)
+        ac = CoreLogging.with_logger(CoreLogging.NullLogger()) do
+            load_default_model()
+        end
+        @test gauge_floors(ac.wing.inboard) == (0.0, 0.0)
+        @test gauge_floors(ac.wing.outboard) == (0.0, 0.0)
+    end
+
+    @testset "defaults depend on the wing configuration" begin
+        for config in ("strut_braced", "truss_braced")
+            ac = read_aircraft_with_gauge_inputs(config)
+            @test gauge_floors(ac.wing.inboard)  == (braced_min_cap_thickness, braced_min_web_thickness)
+            @test gauge_floors(ac.wing.outboard) == (braced_min_cap_thickness, braced_min_web_thickness)
+            # tails have no floor
+            for tail in (ac.htail, ac.vtail)
+                @test gauge_floors(tail.inboard) == (0.0, 0.0)
+                @test gauge_floors(tail.outboard) == (0.0, 0.0)
+            end
+        end
+
+        ac_cantilever = read_aircraft_with_gauge_inputs("cantilever")
+        @test gauge_floors(ac_cantilever.wing.inboard) == (0.0, 0.0)
+        @test gauge_floors(ac_cantilever.wing.outboard) == (0.0, 0.0)
+
+        # default_tbw.toml is a braced wing
+        ac_tbw, _ = read_aircraft_from_text(read(joinpath(TASOPT.__TASOPTroot__,
+                                                          "../example/defaults/default_tbw.toml"), String))
+        @test all(>(0), gauge_floors(ac_tbw.wing.inboard))
+        @test gauge_floors(ac_tbw.wing.outboard) == gauge_floors(ac_tbw.wing.inboard)
+    end
+
+    @testset "explicit [Wing] keys set both sections and win over the defaults" begin
+        for config in wing_config_names
+            ac = read_aircraft_with_gauge_inputs(config) do d
+                d["Wing"]["min_cap_thickness"] = 0.002
+                d["Wing"]["min_web_thickness"] = 0.0007
+            end
+            @test gauge_floors(ac.wing.inboard)  == (0.002, 0.0007)
+            @test gauge_floors(ac.wing.outboard) == (0.002, 0.0007)
+        end
+
+        # distance strings use the units of the other [Wing] distances
+        ac = read_aircraft_with_gauge_inputs("strut_braced") do d
+            d["Wing"]["min_cap_thickness"] = "0.1 in"
+            d["Wing"]["min_web_thickness"] = "0.05 in"
+        end
+        @test collect(gauge_floors(ac.wing.inboard))  ≈ [0.1 * 0.0254, 0.05 * 0.0254]
+        @test collect(gauge_floors(ac.wing.outboard)) ≈ [0.1 * 0.0254, 0.05 * 0.0254]
+
+        # an explicit zero switches the braced default off; a single key leaves the other at its default
+        ac_zero = read_aircraft_with_gauge_inputs("strut_braced") do d
+            d["Wing"]["min_cap_thickness"] = 0.0
+        end
+        @test gauge_floors(ac_zero.wing.inboard)  == (0.0, braced_min_web_thickness)
+        @test gauge_floors(ac_zero.wing.outboard) == (0.0, braced_min_web_thickness)
+
+        ac_web = read_aircraft_with_gauge_inputs("truss_braced") do d
+            d["Wing"]["min_web_thickness"] = 0.0
+        end
+        @test gauge_floors(ac_web.wing.inboard)  == (braced_min_cap_thickness, 0.0)
+        @test gauge_floors(ac_web.wing.outboard) == (braced_min_cap_thickness, 0.0)
+    end
+
+    @testset "save and read reproduce the floors exactly" begin
+        edits = (d -> nothing, # the defaults of the configuration
+                 d -> (d["Wing"]["min_cap_thickness"] = 0.0021; d["Wing"]["min_web_thickness"] = 0.00073),
+                 d -> (d["Wing"]["min_cap_thickness"] = 0.0; d["Wing"]["min_web_thickness"] = 0.0))
+        for config in wing_config_names, edit! in edits
+            ac = read_aircraft_with_gauge_inputs(edit!, config)
+            mktempdir() do dir
+                path = joinpath(dir, "min_gauge_roundtrip.toml")
+                save_aircraft_model(ac, path)
+                saved = TASOPT.TOML.parsefile(path)
+                @test saved["Wing"]["min_cap_thickness"] == ac.wing.inboard.min_cap_thickness
+                @test saved["Wing"]["min_web_thickness"] == ac.wing.inboard.min_web_thickness
+
+                ac_reread, _ = read_aircraft_from_text(read(path, String))
+                @test gauge_floors(ac_reread.wing.inboard)  == gauge_floors(ac.wing.inboard)
+                @test gauge_floors(ac_reread.wing.outboard) == gauge_floors(ac.wing.outboard)
+            end
+        end
+    end
+end
+
 @testset "TBW reference input" verbose=true begin
     defaults_dir = joinpath(TASOPT.__TASOPTroot__, "../example/defaults")
     tbw_path = joinpath(defaults_dir, "default_tbw.toml")
