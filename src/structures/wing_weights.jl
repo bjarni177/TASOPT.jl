@@ -27,6 +27,9 @@ caps-only idealisation (two caps, section modulus ``Z = A_{cap} h_{rms} c_\\perp
 ``\\sigma = M / Z + P / A_{cap}``, which is the stress of the positive bending moment
 ``M_{eff} = M + |P|\\, h_{rms}\\, c_\\perp / 2`` with ``c_\\perp = c_s \\cos\\Lambda``. The section is sized for ``M_{eff}``.
 
+The section's absolute minimum gauges `min_cap_thickness` and `min_web_thickness` [m] are divided by ``c_\\perp`` and,
+if larger than `t_cap_min` or `t_web_min`, replace them as the minimum normalized thicknesses.
+
 !!! details "🔃 Inputs and Outputs"
     **Inputs:**
     - `section::TASOPT.structures.Wing.WingSection`: Wing Section to be sized.
@@ -59,11 +62,14 @@ function size_wing_section!(section, sweep, sigfac; t_cap_min = 0.0, t_web_min =
 
     web_height = cross_section.web_to_box_height * cross_section.thickness_to_chord
 
-    tbweb, Abweb = size_web(tauweb, shear_load, cp, web_height; t_min = t_web_min)
+    t_web_floor = max(t_web_min, section.min_web_thickness / cp)
+    t_cap_floor = max(t_cap_min, section.min_cap_thickness / cp)
+
+    tbweb, Abweb = size_web(tauweb, shear_load, cp, web_height; t_min = t_web_floor)
     
     moment_effective = moment + abs(P_axial) * h_rms * cp / 2
     tbcap, Abcap = size_cap(sigcap, moment_effective, cross_section.thickness_to_chord,
-        cross_section.width_to_chord, h_rms, cs, cosL; t_min = t_cap_min)
+        cross_section.width_to_chord, h_rms, cs, cosL; t_min = t_cap_floor)
 
     # EI_xx
     section.EI[1] = Ecap * cp^4 * (h_rms^3 - (h_rms - 2.0 * tbcap)^3) * cross_section.width_to_chord / 12.0 +
