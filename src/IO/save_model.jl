@@ -214,6 +214,8 @@ function save_aircraft_model(ac::TASOPT.aircraft=TASOPT.read_aircraft_model(),
         d_wing["spanbreak_thickness_to_chord"] = wing.outboard.cross_section.thickness_to_chord
         d_wing["hweb_to_hbox"] = wing.inboard.cross_section.web_to_box_height
         d_wing["spar_box_x_c"] = wing.layout.spar_box_x_c
+        d_wing["min_cap_thickness"] = wing.inboard.min_cap_thickness #applied to both sections on reading
+        d_wing["min_web_thickness"] = wing.inboard.min_web_thickness
 
         d_wing["x_wing_box"] = wing.layout.box_x
         d_wing["z_wing"] = wing.layout.z
