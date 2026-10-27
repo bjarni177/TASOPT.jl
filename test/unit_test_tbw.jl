@@ -830,10 +830,11 @@ end
         @test strut.axial_force > 0
         @test strut.area > 0
         @test strut.weight > 0
-        @test strut.axial_force ≈ strut.area * strut.material.σmax * ac.parg[igsigfac] rtol = 1e-10
+        # the tension area is a lower bound: Euler buckling may enlarge the strut beyond it
+        @test strut.axial_force <= strut.area * strut.material.σmax * ac.parg[igsigfac] * (1 + 1e-10)
     end
 
-    @testset "strut compression is recorded and does not size the strut" begin
+    @testset "strut compression is recorded" begin
         compressive = (:pushover, :pushover_light, :taxi)
         forces = [r.strut_force for r in values(sl.results)]
         @test sl.governing_strut_compression in compressive
@@ -877,6 +878,108 @@ end
         size_aircraft!(ac, printiter = false)
         @test ac.wing.strut.axial_force_compression == 0
         @test ac.wing.sizing_loads.governing_strut_compression == :none
+    end
+end
+
+# Euler buckling sizing of the strut: A = max(tension area, buckling area)
+
+@testset "strut Euler buckling sizing" verbose=true begin
+    st = TASOPT.structures
+    E = TASOPT.structures.Strut().material.E
+
+    @testset "stiffness and buckling area helpers match the hand calculation" begin
+        strut = st.Strut()
+        strut.thickness_to_chord = 0.15
+        strut.wall_thickness_to_depth = 0.05
+        strut.end_fixity_K = 1.0
+        k = 0.15 / (8 * 0.05)   # I_min = k A^2 for two caps of width c, thickness toh*toc*c and depth toc*c
+        l, Pc = 16.0, -3.0e5
+
+        @test st.strut_bending_stiffness(strut, 0.004) ≈ E * k * 0.004^2 rtol = 1e-12
+        @test st.strut_bending_stiffness(strut, 0.0) == 0
+
+        area = st.strut_buckling_area(strut, Pc, l)
+        @test area ≈ sqrt(1.5 * abs(Pc) * l^2 / (pi^2 * E * k)) rtol = 1e-12
+        # round trip: the Euler load of that area is the ultimate compression
+        @test pi^2 * st.strut_bending_stiffness(strut, area) / (strut.end_fixity_K * l)^2 ≈ 1.5 * abs(Pc) rtol = 1e-10
+
+        strut.end_fixity_K = 2.0
+        @test pi^2 * st.strut_bending_stiffness(strut, area) / (strut.end_fixity_K * l)^2 ≈ 1.5 * abs(Pc) / 4 rtol = 1e-10
+        @test st.strut_buckling_area(strut, Pc, l) ≈ 2 * area rtol = 1e-12
+
+        @test st.strut_buckling_area(strut, 0.0, l) == 0.0
+    end
+
+    # Size the strut-braced aircraft with the compatibility strut force; `edit!` changes the strut first.
+    # Probe values at K = 1 (toc = 0.15, toh = 0.05): tension area 4.67e-3 m^2, buckling area 2.23e-2 m^2
+    # (ratio 4.8), P_c = -3.34e5 N, l = 15.9 m. The ratio is proportional to K.
+    function size_braced(edit! = strut -> nothing)
+        ac = read_aircraft_with_wing_config("strut_braced")
+        ac.wing.layout.ηs = 0.9
+        edit!(ac.wing.strut)
+        CoreLogging.with_logger(CoreLogging.NullLogger()) do
+            size_aircraft!(ac, printiter = false)
+        end
+        return ac
+    end
+    tension_area(ac) = ac.wing.strut.axial_force / (ac.wing.strut.material.σmax * ac.parg[igsigfac])
+
+    @testset "sized strut satisfies tension and buckling and records the governing criterion" begin
+        ac = size_braced()
+        strut = ac.wing.strut
+        A_buckling = st.strut_buckling_area(strut, strut.axial_force_compression, strut.length)
+
+        @test strut.axial_force_compression < 0
+        @test strut.area >= tension_area(ac) * (1 - 1e-8)
+        @test strut.area >= A_buckling * (1 - 1e-8)
+        @test strut.area ≈ max(tension_area(ac), A_buckling) rtol = 1e-8
+        @test strut.sizing_criterion === (A_buckling > tension_area(ac) ? :buckling : :tension)
+        @test strut.EI_min ≈ st.strut_bending_stiffness(strut, strut.area) rtol = 1e-10
+        @test strut.buckling_load ≈ pi^2 * strut.EI_min / (strut.end_fixity_K * strut.length)^2 rtol = 1e-10
+        @test strut.buckling_load >= 1.5 * abs(strut.axial_force_compression) * (1 - 1e-8)
+    end
+
+    @testset "a slender strut is governed by buckling" begin
+        ac = size_braced(strut -> strut.end_fixity_K = 2.0)   # buckling area about 9.6 times the tension area
+        strut = ac.wing.strut
+        @test strut.sizing_criterion === :buckling
+        @test strut.area > 1.1 * tension_area(ac)
+        @test strut.area ≈ st.strut_buckling_area(strut, strut.axial_force_compression, strut.length) rtol = 1e-8
+        @test strut.buckling_load ≈ 1.5 * abs(strut.axial_force_compression) rtol = 1e-8
+
+        # a larger area makes a heavier strut
+        stocky = size_braced(strut -> strut.end_fixity_K = 0.1).wing.strut
+        @test strut.weight > stocky.weight
+    end
+
+    @testset "a stocky strut is governed by tension" begin
+        ac = size_braced(strut -> strut.end_fixity_K = 0.1)   # buckling area about 0.48 times the tension area
+        strut = ac.wing.strut
+        @test strut.sizing_criterion === :tension
+        @test strut.area ≈ tension_area(ac) rtol = 1e-8
+        @test strut.area > 1.1 * st.strut_buckling_area(strut, strut.axial_force_compression, strut.length)
+        @test strut.axial_force ≈ strut.area * strut.material.σmax * ac.parg[igsigfac] rtol = 1e-10
+        @test strut.buckling_load > 1.5 * abs(strut.axial_force_compression)
+    end
+
+    @testset "Prescribed strut force is sized by tension only" begin
+        ac = size_braced(strut -> strut.opt_strut_force = TASOPT.StrutForceModel.Prescribed)
+        strut = ac.wing.strut
+        @test strut.axial_force_compression == 0
+        @test strut.sizing_criterion === :tension
+        @test strut.area ≈ strut.axial_force / (strut.material.σmax * ac.parg[igsigfac]) rtol = 1e-10
+        @test strut.EI_min ≈ st.strut_bending_stiffness(strut, strut.area) rtol = 1e-10
+    end
+
+    @testset "cantilever wing has no buckling data" begin
+        ac = CoreLogging.with_logger(CoreLogging.NullLogger()) do
+            load_default_model()
+        end
+        size_aircraft!(ac, printiter = false)
+        strut = ac.wing.strut
+        @test strut.EI_min == 0
+        @test strut.buckling_load == 0
+        @test strut.sizing_criterion === :none
     end
 end
 
