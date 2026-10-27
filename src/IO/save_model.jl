@@ -237,6 +237,11 @@ function save_aircraft_model(ac::TASOPT.aircraft=TASOPT.read_aircraft_model(),
             d_wing["Strut"] = d_wing_strut
         end
 
+    # Jury strut details (only used if the wing is truss braced)
+        if options.opt_wing_config == WingConfig.TrussBraced
+            d_wing["Jury"] = Dict("eta_strut" => wing.jury.eta_strut)
+        end
+
     # Sizing load cases
         d_wing_loads = Dict()
         for case_name in fieldnames(typeof(wing.sizing_loads))
