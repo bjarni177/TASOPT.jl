@@ -231,6 +231,7 @@ function save_aircraft_model(ac::TASOPT.aircraft=TASOPT.read_aircraft_model(),
                 d_wing_strut["box_width_to_chord"] = wing.strut.box_width_to_chord
                 d_wing_strut["web_to_box_height"] = wing.strut.web_to_box_height
                 d_wing_strut["end_fixity_K"] = wing.strut.end_fixity_K
+                d_wing_strut["truss_inertia_efficiency"] = wing.strut.truss_inertia_efficiency
                 d_wing_strut["opt_strut_force"] = string(wing.strut.opt_strut_force)
                 d_wing_strut["weight_frac_added"] = wing.strut.weight_frac_added
             d_wing["Strut"] = d_wing_strut
@@ -420,12 +421,21 @@ function save_aircraft_model(ac::TASOPT.aircraft=TASOPT.read_aircraft_model(),
         #d_struct["strut_density"] = wing.strut.material.ρ
 
         # `sigma_struts`, `E_struts` and `strut_density` above are stale and ignored on read.
-        # The strut material is read from the keys below. `StructuralAlloy` only keeps
-        # σmax = YTS/(max_avg_stress*safety_factor), so max_avg_stress is saved as 1.0 and
-        # the safety factor carries the ratio YTS/σmax, which reproduces σmax exactly.
-        d_struct["strut_material"] = wing.strut.material.name
-        d_struct["strut_max_avg_stress"] = 1.0
-        d_struct["strut_safety_factor"] = wing.strut.material.YTS / wing.strut.material.σmax
+        # Each material is saved with its own stress and safety factors. The wing caps and webs
+        # are saved from the inboard section, as the factors are read once for both sections.
+        structural_materials = (
+            caps = wing.inboard.caps.material,
+            webs = wing.inboard.webs.material,
+            strut = wing.strut.material,
+            skin = fuselage.skin.material,
+            cone = fuselage.cone.material,
+            bending = fuselage.bendingmaterial_h.material,
+            floor = fuselage.floor.material)
+        for (name, material) in pairs(structural_materials)
+            d_struct["$(name)_material"] = material.name
+            d_struct["$(name)_max_avg_stress"] = material.max_avg_stress
+            d_struct["$(name)_safety_factor"] = material.safety_factor
+        end
         d_out["Structures"] = d_struct
     #--end Structures----------------
 
