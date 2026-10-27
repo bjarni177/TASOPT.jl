@@ -50,7 +50,7 @@ $TYPEDFIELDS
     # Loads
     """Maximum strut tension force [N]"""
     axial_force::Float64 = 0
-    """Strut axial force in the most compressive case [N]"""
+    """Strut axial force in the most compressive case [N], zero or negative, scaled to the total strut length like `axial_force`"""
     axial_force_compression::Float64 = 0
     """Strut Euler buckling load P_cr [N]"""
     buckling_load::Float64 = 0
@@ -205,6 +205,8 @@ $TYPEDFIELDS
     governing_break::Symbol = :pullup
     """Case with the largest strut tension (`:none` for a wing without a strut)"""
     governing_strut::Symbol = :none
+    """Case with the most negative strut force (`:none` for a wing without a strut or a strut that is not compressed)"""
+    governing_strut_compression::Symbol = :none
 end
 
 """
