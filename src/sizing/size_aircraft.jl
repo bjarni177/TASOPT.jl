@@ -380,6 +380,7 @@ function _size_aircraft!(ac; itermax=35,
                                             Nlift, Weng1, 0, 0.0, 1, dyeinn,
                                             parg[igsigfac], rhofuel;
                                             has_strut = options.has_strut,
+                                            has_jury = options.opt_wing_config == WingConfig.TrussBraced,
                                             design_wing_fuel = Wpay - Wpaymax + parg[igWfuel],
                                             has_wing_fuel = options.has_wing_fuel,
                                             has_centerbox_fuel = options.has_centerbox_fuel,
