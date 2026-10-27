@@ -31,19 +31,13 @@ $TYPEDFIELDS
     """Euler effective-length factor of the strut end fixity"""
     end_fixity_K::Float64 = 1.0
     """
-    Knock-down on the minor-axis second moment of area of the strut section, ``I = \\eta\\,A d^2/4`` [-].
-    Placeholder (1.0 = ideal section, no knock-down). SUGAR Phase IV (NASA CR 20220016017, Sec 2.2.3 and 3.2.4,
-    PDF pp. 29, 42-46; Tables 12 and 16, PDF pp. 65 and 77) models the strut and jury as closed two-spar composite
-    skin boxes, not as laced trusses, and quotes no section properties or lacing efficiency. A thin-wall box
-    estimated from the Table 12/16 skin and spar masses gives I/(A d^2/4) of about 0.93-0.94 (strut) and 0.97 (jury);
-    this estimate is not a lacing efficiency. A laced truss member would be lower; valid range to be set from
-    literature review (e.g. EN 1993-1-1 Sec 6.4 built-up members, Timoshenko and Gere Ch. 2).
-    Placeholder; SUGAR Phase II (NASA CR-2015-218704 Vol. I) §2.1.8.7/§2.2.3 (PDF p.127, 156) and Figs 2.124–2.125
-    (PDF p.133): strut is a closed composite box (spars at 14.8 %/70 % chord, depth = 0.3·box chord);
-    I_min/(A d²/4) ≈ 0.94 at max chord, ≈ 0.88–0.90 length-weighted (digitised, derived). This is box-section
-    efficiency, not a lacing knock-down; no lacing efficiency is published.
+    Knock-down on the minor-axis second moment of area of the strut section, ``I = \\eta\\,A d^2/4`` [-]
+    (1.0 = ideal two-flange section). Default 0.92: centre (0.925, rounded down, the conservative side) of the
+    closed composite box estimates I/(A d^2/4) ≈ 0.88-0.97 derived from SUGAR Phase II and Phase IV (see
+    SUGAR_STRUT_FINDINGS.md). A box value is an upper bound for a laced truss member (lacing shear flexibility
+    lowers it); to be refined by literature review.
     """
-    truss_inertia_efficiency::Float64 = 1.0
+    truss_inertia_efficiency::Float64 = 0.92 # Still requires human review of the claimed value
     """Strut local velocity ratio"""
     local_velocity_ratio::Float64 = 0
     """Model for the force that the strut carries"""
@@ -91,26 +85,44 @@ end
 """
 $TYPEDEF
 
-Jury strut connecting the wing to the main strut
+Vertical jury strut of a truss-braced wing, connecting the wing to the main strut.
+It holds the main strut laterally (a rigid lateral support), so it shortens the buckling length of the main strut,
+but it does not change the loads in the wing or in the main strut.
+
+Only `eta_strut` (and the material and added weight fraction) are inputs; the other fields are computed
+by [`wing_weights!`](@ref).
 
 $TYPEDFIELDS
 """
-@kwdef mutable struct JuryStrut ### Consider if this is required or not!
+@kwdef mutable struct JuryStrut
     """Jury strut Material """
     material::StructuralAlloy = StructuralAlloy("TASOPT-Al")
-    """Wing-side attachment, as a fraction of the wing semispan"""
+    # Input
+    """
+    Position of the jury strut along the main strut, as a fraction of the strut length measured from the fuselage end [-].
+    Default 0.5 is a placeholder (jury at the middle of the strut). This is a fraction of the strut length, not of the semispan.
+    """
+    eta_strut::Float64 = 0.5
+
+    # Computed geometry
+    """
+    Wing-side attachment, as a fraction of the wing semispan [-]: `ηo + eta_strut (ηs - ηo)`.
+    It is a different width from `eta_strut`, which is a fraction of the strut length.
+    """
     eta_wing::Float64 = 0
-    """Strut-side attachment, as a fraction of the strut length"""
-    eta_strut::Float64 = 0
-    """Jury strut length [m]"""
+    """Jury strut length [m]: `strut.z (1 - eta_strut)`"""
     length::Float64 = 0
     """Jury strut cross-sectional area [m^2]"""
     area::Float64 = 0
-    """Jury strut axial force [N]"""
+
+    # Loads
+    """Jury strut axial force [N], negative (compression)"""
     axial_force::Float64 = 0
     """Jury strut Euler buckling load [N]"""
     buckling_load::Float64 = 0
-    """Jury strut weight [N]"""
+
+    # Weights
+    """Jury strut weight [N], both wings"""
     weight::Float64 = 0
     """Added weight fraction for fairings and fittings"""
     weight_frac_added::Float64 = 0.60 # Placeholder - Assumed to be the same value as for the main strut
@@ -269,6 +281,9 @@ $TYPEDFIELDS
 
     """Wing Strut"""
     strut::Strut = Strut()
+
+    """Vertical jury strut of a truss-braced wing"""
+    jury::JuryStrut = JuryStrut()
 
     """Wing sizing load cases and their results"""
     sizing_loads::WingSizingLoads = WingSizingLoads()
