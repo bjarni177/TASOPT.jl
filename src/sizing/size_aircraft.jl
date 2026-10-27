@@ -359,9 +359,9 @@ function _size_aircraft!(ac; itermax=35,
         dyeinn = 0.5 * wing.layout.span * (wing.layout.ηs - wing.layout.ηo)
 
         # Load cases of the wing sizing: records the case loads in wing.sizing_loads (results, governing_root,
-        # governing_break, governing_strut and n_computed). The returned envelope sizes a cantilever wing when more
-        # than one case is active (with only the pull-up the loads computed in wing_weights! are used), and a braced
-        # wing with the compatibility strut force model. The wing is not modified.
+        # governing_break, governing_strut, governing_strut_compression and n_computed). The returned envelope sizes
+        # a cantilever wing when more than one case is active (with only the pull-up the loads computed in
+        # wing_weights! are used), and a braced wing with the compatibility strut force model. The wing is not modified.
         # parg[igWfmax] is the wing tank capacity of the previous iteration.
         masses = wing_sizing_masses(W_cruise = BW, W_MTO = WMTO, W_pay = Wpay, W_paymax = Wpaymax,
                                     W_fuel = parg[igWfuel], freserve = parg[igfreserve],
