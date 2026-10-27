@@ -896,6 +896,53 @@ end
         @test sd2.tbcap == 2 * sd0.tbcap
         @test sd2.tbweb == sd0.tbweb
     end
+
+    @testset "size_wing_section! absolute minimum gauge of the section" begin
+        section = deepcopy(wing.outboard)
+        cp = section.co * cosd(wing.sweep)
+        cross = section.cross_section
+        web_height = cross.web_to_box_height * cross.thickness_to_chord
+
+        # the floor fields default to zero, so sizing is unchanged
+        @test section.min_cap_thickness == 0.0
+        @test section.min_web_thickness == 0.0
+        sd0 = st.size_wing_section!(section, wing.sweep, 1.0)
+        EI0, GJ0 = copy(section.EI), section.GJ
+
+        @testset "floor above the required thickness governs" begin
+            cap_floor = 2 * sd0.tbcap * cp
+            web_floor = 2 * sd0.tbweb * cp
+            section.min_cap_thickness = cap_floor
+            section.min_web_thickness = web_floor
+            sd = st.size_wing_section!(section, wing.sweep, 1.0)
+            @test sd.tbcap == cap_floor / cp
+            @test sd.tbweb == web_floor / cp
+            @test sd.Abcap ≈ 2 * sd.tbcap * cross.width_to_chord
+            @test sd.Abweb ≈ 2 * sd.tbweb * web_height
+        end
+
+        @testset "each floor acts on its own member" begin
+            section.min_cap_thickness = 2 * sd0.tbcap * cp
+            section.min_web_thickness = 0.0
+            sd = st.size_wing_section!(section, wing.sweep, 1.0)
+            @test sd.tbcap == section.min_cap_thickness / cp
+            @test sd.tbweb == sd0.tbweb
+
+            section.min_cap_thickness = 0.0
+            section.min_web_thickness = 2 * sd0.tbweb * cp
+            sd = st.size_wing_section!(section, wing.sweep, 1.0)
+            @test sd.tbcap == sd0.tbcap
+            @test sd.tbweb == section.min_web_thickness / cp
+        end
+
+        @testset "floor below the required thickness changes nothing" begin
+            section.min_cap_thickness = 0.5 * sd0.tbcap * cp
+            section.min_web_thickness = 0.5 * sd0.tbweb * cp
+            sd = st.size_wing_section!(section, wing.sweep, 1.0)
+            @test (sd.tbweb, sd.tbcap, sd.Abweb, sd.Abcap) == (sd0.tbweb, sd0.tbcap, sd0.Abweb, sd0.Abcap)
+            @test section.EI == EI0 && section.GJ == GJ0
+        end
+    end
 end
 
 end
