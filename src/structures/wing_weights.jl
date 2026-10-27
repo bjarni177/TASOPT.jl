@@ -558,8 +558,8 @@ and break bending moment in `wing.sizing_loads.governing_root` and `wing.sizing_
 
 For a braced wing, the case with the largest strut tension is stored in `wing.sizing_loads.governing_strut`,
 and the envelope of the inboard section is the largest over the cases of the root and interior bending moment
-and of the root and break shear, instead of the root loads only. Compression of the strut is recorded in the
-case loads only.
+and of the root and break shear, instead of the root loads only. The case with the most negative strut force,
+if the strut is compressed in any case, is stored in `wing.sizing_loads.governing_strut_compression`.
 
 Active gust cases are skipped. The wing has one engine per wing at the inboard side. The section loads
 of the `wing` are not modified.
@@ -582,10 +582,12 @@ of the `wing` are not modified.
     **Outputs:**
     - Cantilever wing: `(S_root, M_root, S_break, M_break)`: Largest magnitude of the shear and bending moment
       at the wing root and at the wing break, each from its governing case, or `nothing` if no case was evaluated.
-    - Braced wing: `(S_root, M_root, S_break, M_break, T_strut, P_axial)`, where `S_root` and `M_root` are the
-      loads for the inboard section sized as described above, `T_strut` is the largest strut tension [N] over the
-      cases and `P_axial` the axial force of largest magnitude in the inboard wing [N] (negative in compression),
-      or `nothing` if no case was evaluated.
+    - Braced wing: `(S_root, M_root, S_break, M_break, T_strut, T_strut_compression, P_axial)`, where `S_root`
+      and `M_root` are the loads for the inboard section sized as described above, `T_strut` is the largest strut
+      tension [N] over the cases (0 if the strut is compressed in all cases), `T_strut_compression` the most
+      negative strut force [N] over the cases (0 if the strut is not compressed in any case) and `P_axial` the
+      axial force of largest magnitude in the inboard wing [N] (negative in compression), or `nothing` if no
+      case was evaluated.
 """
 function evaluate_wing_sizing_cases!(wing, masses, has_wing_fuel, rclt, rcls, Lhtail, gammat, gammas, We, dyeinn;
         has_strut = false)
@@ -594,6 +596,7 @@ function evaluate_wing_sizing_cases!(wing, masses, has_wing_fuel, rclt, rcls, Lh
     config = has_strut ? Braced() : Cantilever()
     empty!(sl.results)
     sl.governing_strut = :none
+    sl.governing_strut_compression = :none
 
     # Limitation: every case uses the panel weights and inertia stored in the wing (design cruise mass
     # state). Only the lift weight, the load factor and the tail load follow the mass state of the case.
@@ -617,12 +620,16 @@ function evaluate_wing_sizing_cases!(wing, masses, has_wing_fuel, rclt, rcls, Lh
 
     root, brk = sl.results[sl.governing_root], sl.results[sl.governing_break]
     if has_strut
-        sl.governing_strut = names[argmax([sl.results[name].strut_force for name in names])]
+        strut_forces = [sl.results[name].strut_force for name in names]
+        sl.governing_strut = names[argmax(strut_forces)]
+        strut_compression, i_compression = findmin(strut_forces)
+        strut_compression < 0 && (sl.governing_strut_compression = names[i_compression])
         cases = [sl.results[name] for name in names]
         return (S_root = maximum(max(abs(c.S_root), abs(c.S_break)) for c in cases),
                 M_root = maximum(max(abs(c.M_root), abs(c.M_inboard_extreme)) for c in cases),
                 S_break = abs(brk.S_break), M_break = abs(brk.M_break),
-                T_strut = maximum(c.strut_force for c in cases),
+                T_strut = max(0.0, maximum(strut_forces)),
+                T_strut_compression = min(0.0, strut_compression),
                 P_axial = cases[argmax([abs(c.P_axial_inboard) for c in cases])].P_axial_inboard)
     end
     return (S_root = abs(root.S_root), M_root = abs(root.M_root),
@@ -708,10 +715,10 @@ Also returns the material gauges, torsional and bending stiffness. Formerly, `ge
     - `has_centerbox_fuel::Bool`: Whether fuel is stored in the wing center box. Only used with `design_wing_fuel`.
     - `section_loads_envelope::Union{Nothing,NamedTuple}`: Envelope of the section loads `(S_root, M_root, S_break, M_break)` over the wing sizing cases.
         If given (not `nothing`), it replaces the computed shear and moment of the inboard (root) and outboard (break) sections before they are sized.
-        With `has_strut`, the envelope is the one of a braced wing, with the additional fields `T_strut` and `P_axial`
-        from [`evaluate_wing_sizing_cases!`](@ref), and is used only if `wing.strut.opt_strut_force` is `Compatibility`:
+        With `has_strut`, the envelope is the one of a braced wing, with the additional fields `T_strut`, `T_strut_compression`
+        and `P_axial` from [`evaluate_wing_sizing_cases!`](@ref), and is used only if `wing.strut.opt_strut_force` is `Compatibility`:
         the inboard section is then sized for the envelope shear, moment and axial force, and the strut for the envelope
-        tension `T_strut`. With the `Prescribed` strut force model, or if no envelope is given, a wing with `has_strut`
+        tension `T_strut`; `T_strut_compression` is only recorded in `wing.strut.axial_force_compression`. With the `Prescribed` strut force model, or if no envelope is given, a wing with `has_strut`
         is sized for the outboard loads of the strut-attach station and the prescribed strut force, and the envelope is ignored.
         If `nothing` (default), the computed loads are used.
 
@@ -765,14 +772,17 @@ function wing_weights!(wing, po, gammat, gammas,
         Tstrutp = 0.
         if wing isa Wing # Tail has no strut
             wing.strut.cos_lambda = 1.0
+            wing.strut.axial_force_compression = 0.0
         end
 
     else
         #----- strut present
         ls = sqrt(wing.strut.z^2 + (0.5*wing.layout.span*(etas-etao))^2)
+        Tstrut_compression = 0.
         if has_braced_envelope
             #----- strut tension, and inboard shear, moment and axial force from the sizing load cases
             Tstrut = section_loads_envelope.T_strut
+            Tstrut_compression = get(section_loads_envelope, :T_strut_compression, 0.0)
             wing.inboard.max_shear_load = section_loads_envelope.S_root
             wing.inboard.moment = section_loads_envelope.M_root
 
@@ -797,6 +807,9 @@ function wing_weights!(wing, po, gammat, gammas,
         Tstrutp = Tstrut*lsp/ls
         wing.strut.cos_lambda = ls/lsp
         wing.strut.axial_force = Tstrutp
+        # The compression is scaled by lsp/ls like the tension: it is the force along the total (swept, 3-D)
+        # strut length lsp, whereas the strut force of the load cases is in the plane, along the length ls.
+        wing.strut.axial_force_compression = Tstrut_compression*lsp/ls
         wing.strut.area = Tstrutp/(wing.strut.material.σmax * sigfac)
         wing.strut.length = lsp
         wing.strut.weight   = 2.0*wing.strut.material.ρ*gee*wing.strut.area*lsp
