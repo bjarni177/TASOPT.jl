@@ -758,6 +758,7 @@ function update_WMTO!(ac, rlx)
            fuse.weight +
            wing.weight +
            wing.strut.weight +
+           wing.jury.weight +
            htail.weight +
            vtail.weight +
            parg[igWeng] +
@@ -774,6 +775,7 @@ function update_WMTO!(ac, rlx)
     #check that fsum <= 1.0
     fwing = wing.weight / WMTO
     fstrut = wing.strut.weight / WMTO
+    fjury = wing.jury.weight / WMTO
     fhtail = htail.weight / WMTO
     fvtail = vtail.weight / WMTO
     feng = parg[igWeng] / WMTO
@@ -784,7 +786,7 @@ function update_WMTO!(ac, rlx)
     ftank = parg[igWftank] / WMTO
 
     fsum = fwing + fstrut + fhtail + fvtail + feng + ffuel + fuse.HPE_sys.W +
-           flgnose + flgmain + ftank + ftesys
+           flgnose + flgmain + ftank + ftesys + fjury
 
     if (fsum >= 1.0)
         @error "Something is wrong!! fsum ≥ 1.0"
@@ -807,6 +809,7 @@ function update_weights!(ac, rlx)
 
     fwing = wing.weight / WMTO
     fstrut = wing.strut.weight / WMTO
+    fjury = wing.jury.weight / WMTO
     fhtail = htail.weight / WMTO
     fvtail = vtail.weight / WMTO
     feng = parg[igWeng] / WMTO
@@ -824,7 +827,7 @@ function update_weights!(ac, rlx)
     ftank = parg[igWftank] / WMTO
 
     fsum = fwing + fstrut + fhtail + fvtail + feng + ffuel + fuse.HPE_sys.W +
-           flgnose + flgmain + ftank + ftesys
+           flgnose + flgmain + ftank + ftesys + fjury
 
     if (fsum ≥ 1.0)
         @error "SOMETHING IS WRONG fsum ≥ 1"
@@ -836,6 +839,7 @@ function update_weights!(ac, rlx)
     parg[igWMTO] = WMTO
     wing.weight = WMTO * fwing
     wing.strut.weight = WMTO * fstrut
+    wing.jury.weight = WMTO * fjury
     htail.weight = WMTO * fhtail
     vtail.weight = WMTO * fvtail
     parg[igWeng] = WMTO * feng
