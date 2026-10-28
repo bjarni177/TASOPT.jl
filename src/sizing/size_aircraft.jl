@@ -247,7 +247,7 @@ function _size_aircraft!(ac; itermax=35,
             bv, vtail.outboard.λ, vtail.ntails,
             xhtail, xvtail,
             xwing, wing.layout.box_x, cbox,
-            xeng)
+            xeng; strut_reaction_vertical = wing.strut.reaction_vertical)
 
         # Use cabin volume to get actual buoyancy weight
         ρcab = max(parg[igpcabin], pare[iep0, ipcruise1]) / (RSL * TSL)
