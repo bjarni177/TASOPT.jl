@@ -639,14 +639,14 @@ end
     strut = wing.strut
 
     @testset "Strut-on sizing matches the legacy results" begin
-        # Reference values from the strut model before axial_force became a force
-        @test wing.weight             ≈ 104682.33132567903  rtol=1e-10
-        @test strut.weight            ≈ 1544.7255555813356  rtol=1e-10
-        @test ac.parm[imPFEI]         ≈ 0.9311145282956051  rtol=1e-10
-        @test ac.parg[igWMTO]         ≈ 850444.9472357186   rtol=1e-10
-        @test strut.chord             ≈ 0.5946475578487581  rtol=1e-10
-        @test strut.S                 ≈ 6.538342414355748   rtol=1e-10
-        @test strut.area              ≈ 0.005304085770832381 rtol=1e-10
+        # Reference values with the strut weight 2 rho g A l (1 + weight_frac_added) and the fuselage strut-attach reinforcement
+        @test wing.weight             ≈ 163424.13616772654    rtol=1e-10
+        @test strut.weight            ≈ 4359.591962938605     rtol=1e-10
+        @test ac.parm[imPFEI]         ≈ 1.2058646201314176    rtol=1e-10
+        @test ac.parg[igWMTO]         ≈ 1.1689761816531545e6  rtol=1e-10
+        @test strut.chord             ≈ 0.7408300901487267    rtol=1e-10
+        @test strut.S                 ≈ 9.25727603296466      rtol=1e-10
+        @test strut.area              ≈ 0.008232438337046557  rtol=1e-10
     end
 
     @testset "Prescribed strut: pull-up case, length, force, weight and chord" begin
@@ -666,8 +666,8 @@ end
         @test strut.axial_force > 0
         @test strut.axial_force ≈ strut.area * strut.material.σmax * ac.parg[igsigfac] rtol=1e-10
 
-        # Two struts of uniform area
-        @test strut.weight ≈ 2 * strut.material.ρ * TASOPT.gee * strut.area * strut.length rtol=1e-6
+        # Two struts of uniform (bare) area, plus the added weight fraction for fairings and fittings
+        @test strut.weight ≈ 2 * strut.material.ρ * TASOPT.gee * strut.area * strut.length * (1 + strut.weight_frac_added) rtol=1e-6
         @test strut.S ≈ 2 * strut.chord * strut.length rtol=1e-10
 
         # the chord follows from the area, the wall thickness to depth and the thickness to chord
@@ -832,7 +832,7 @@ end
     end
 
     @testset "a slender strut is governed by buckling" begin
-        ac = size_braced(:slender, ac -> ac.wing.strut.end_fixity_K = 2.0)   # buckling area about 9.6 times the tension area
+        ac = size_braced(:slender, ac -> (ac.wing.strut.end_fixity_K = 2.0; ac.fuselage.weight_frac_strut_attach = 0.0))   # buckling area about 9.6 times the tension area
         strut = ac.wing.strut
         @test strut.sizing_criterion === :buckling
         @test strut.area > 1.1 * yield_area(ac)
@@ -951,7 +951,7 @@ end
             if A_buckling > A_yield
                 @test jury.buckling_load ≈ jury.material.safety_factor * abs(jury.axial_force) rtol = 1e-8
             end
-            @test jury.weight ≈ 2 * jury.material.ρ * TASOPT.gee * jury.area * jury.length rtol = 1e-8
+            @test jury.weight ≈ 2 * jury.material.ρ * TASOPT.gee * jury.area * jury.length * (1 + jury.weight_frac_added) rtol = 1e-8
         end
     end
 
@@ -992,6 +992,47 @@ end
             path = joinpath(dir, "no_jury.toml")
             save_aircraft_model(read_aircraft_with_wing_config("strut_braced"), path)
             @test !haskey(TASOPT.TOML.parsefile(path)["Wing"], "Jury")
+        end
+    end
+end
+
+# The added weight fraction of the jury has its own default (0.60) and its own [Wing.Jury] key
+@testset "[Wing.Jury] weight_frac_added" verbose=true begin
+    read_wing(config, block = "") = first(read_aircraft_from_text(toml_with_jury_inputs(config, block))).wing
+
+    @testset "defaults to 0.60 for the jury and stays 0.60 for the main strut" begin
+        @test TASOPT.structures.JuryStrut().weight_frac_added == 0.60
+        @test TASOPT.structures.Strut().weight_frac_added == 0.60
+        ac = first(read_aircraft_from_text(toml_with_jury_inputs("truss_braced")))
+        @test ac.wing.jury.weight_frac_added == 0.60
+        @test ac.wing.strut.weight_frac_added == 0.60
+    end
+
+    @testset "is read independently of the strut value, and save and read reproduce it exactly" begin
+        wing = read_wing("truss_braced", "eta_strut = 0.3\nweight_frac_added = 0.2")
+        @test wing.jury.weight_frac_added == 0.2
+        @test wing.jury.eta_strut == 0.3
+        @test wing.strut.weight_frac_added == 0.60
+
+        # a key without eta_strut is read too
+        @test read_wing("truss_braced", "weight_frac_added = 0.15").jury.weight_frac_added == 0.15
+        @test read_wing("truss_braced", "weight_frac_added = 0.15").jury.eta_strut == 0.5
+
+        # a strut-braced wing does not read it
+        @test read_wing("strut_braced", "weight_frac_added = 0.2").jury.weight_frac_added == 0.60
+
+        ac = first(read_aircraft_from_text(toml_with_jury_inputs("truss_braced", "eta_strut = 0.3\nweight_frac_added = 0.2")))
+        mktempdir() do dir
+            path = joinpath(dir, "jury_weight_roundtrip.toml")
+            save_aircraft_model(ac, path)
+            saved = TASOPT.TOML.parsefile(path)
+            @test saved["Wing"]["Jury"]["weight_frac_added"] == 0.2
+            @test saved["Wing"]["Jury"]["eta_strut"] == 0.3
+            @test saved["Wing"]["Strut"]["weight_frac_added"] == 0.60
+            reread = first(read_aircraft_from_text(read(path, String)))
+            @test reread.wing.jury.weight_frac_added == 0.2
+            @test reread.wing.jury.eta_strut == 0.3
+            @test reread.wing.strut.weight_frac_added == 0.60
         end
     end
 end
@@ -1063,12 +1104,240 @@ end
         @test sized_tail.parg[igxCGfwd] > base.parg[igxCGfwd]
         @test abs(sized_tail.htail.layout.S - base.htail.layout.S) > 1e-3 * base.htail.layout.S
     end
+
+    @testset "update_WMTO! adds the jury weight to the weight sum" begin
+        extra = 5e4
+        heavier = with_extra_jury_weight(truss, extra)
+        reference = deepcopy(truss)
+        TASOPT.update_WMTO!(reference, 1.0)
+        TASOPT.update_WMTO!(heavier, 1.0)
+        @test heavier.parg[igWMTO] - reference.parg[igWMTO] ≈ extra / (1 - truss.fuselage.HPE_sys.W) rtol = 1e-8
+    end
+
+    @testset "initialize_sizing_loop! starts the jury at zero weight" begin
+        ac = deepcopy(truss)
+        @test ac.wing.jury.weight > 0
+        TASOPT.initialize_sizing_loop!(ac)
+        @test ac.wing.jury.weight == 0
+    end
+
+    @testset "balance_aircraft! puts the jury weight and moment into the CG" begin
+        extra = 1e5
+        heavier = with_extra_jury_weight(truss, extra)
+        function cruise_xCG(ac)
+            ac = deepcopy(ac)
+            TASOPT.balance_aircraft!(ac, 1, ipcruise1, 0.5, 1.0, 0.0, TrimVar.None)
+            return ac.para[iaxCG, ipcruise1, 1]
+        end
+        xCG, xCG_heavier = cruise_xCG(truss), cruise_xCG(heavier)
+
+        # the extra weight acts at the wing box plus its moment arm
+        x_jury = heavier.wing.layout.box_x + jury_dx_arm(heavier)
+        @test x_jury < xCG
+        @test x_jury < xCG_heavier < xCG
+    end
+
+    @testset "the legacy parameter dump writes the jury weight and moment" begin
+        # `reset_regression_test` writes into the test directory, so restore the reference files afterwards
+        reference_files = [joinpath(TASOPT.__TASOPTroot__, "../test", f) for f in ("default_sized.jl", "default_structures.jl")]
+        originals = read.(reference_files, String)
+        dump = try
+            CoreLogging.with_logger(CoreLogging.NullLogger()) do
+                TASOPT.reset_regression_test(truss)
+            end
+            read(reference_files[2], String)
+        finally
+            write.(reference_files, originals)
+        end
+        # NaN if the dump has no line for `name`
+        function value(name)
+            line = match(Regex("^" * name * " = (\\S+)", "m"), dump)
+            return isnothing(line) ? NaN : parse(Float64, line.captures[1])
+        end
+        @test value("wing.strut.weight") == truss.wing.strut.weight
+        @test value("wing.jury.weight") == truss.wing.jury.weight
+        @test value("wing.jury.dxW") == truss.wing.jury.dxW
+    end
+end
+
+# Strut and jury weights are the bare member weight of both wings times (1 + weight_frac_added); the area stays bare
+@testset "strut and jury weight include the added weight fraction" verbose=true begin
+    st = TASOPT.structures
+    bare_weight(member) = 2 * member.material.ρ * TASOPT.gee * member.area * member.length
+    # pitching-moment arm of the strut about the wing-box x
+    strut_dx_arm(ac) = 0.25 * ac.wing.layout.span * (ac.wing.layout.ηs - ac.wing.layout.ηo) * tand(ac.wing.layout.sweep)
+    jury_dx_arm(ac) = 0.5 * ac.wing.layout.span * (ac.wing.jury.eta_wing - ac.wing.layout.ηo) * tand(ac.wing.layout.sweep)
+
+    # truss-braced wings with the default added fractions (strut 0.60, jury 0.30) and with none
+    with_fractions = sized_jury_aircraft("truss_braced", 0.3)
+    without_fractions = sized_once(:no_added_weight_fraction) do
+        ac = read_aircraft_with_wing_config("truss_braced")
+        ac.wing.layout.ηs = 0.7
+        ac.wing.jury.eta_strut = 0.3
+        ac.wing.strut.weight_frac_added = 0.0
+        ac.wing.jury.weight_frac_added = 0.0
+        ac
+    end
+
+    @testset "strut weight is 2 rho g A l (1 + weight_frac_added) of the bare area, and the moment uses the total weight" begin
+        for (ac, frac) in ((with_fractions, 0.60), (without_fractions, 0.0))
+            strut = ac.wing.strut
+            @test strut.weight_frac_added == frac
+            @test strut.area > 0
+            @test strut.weight ≈ 2 * strut.material.ρ * TASOPT.gee * strut.area * strut.length * (1 + frac) rtol = 1e-6
+            @test strut.dxW ≈ strut.weight * strut_dx_arm(ac) rtol = 1e-6
+        end
+        # with no added fraction the weight is the bare member weight
+        @test without_fractions.wing.strut.weight ≈ bare_weight(without_fractions.wing.strut) rtol = 1e-6
+        @test with_fractions.wing.strut.weight > bare_weight(with_fractions.wing.strut)
+    end
+
+    @testset "the strut area is the bare structural area" begin
+        # tension area of the governing tension, or the buckling area: neither contains the added fraction
+        for ac in (with_fractions, without_fractions)
+            strut = ac.wing.strut
+            A_yield = max(strut.axial_force, abs(strut.axial_force_compression)) / (strut.material.σmax * ac.parg[igsigfac])
+            A_buckling = st.strut_buckling_area(strut, strut.axial_force_compression,
+                                                st.strut_buckling_length(strut.length, ac.wing.jury.eta_strut))
+            @test strut.area ≈ max(A_yield, A_buckling) rtol = 1e-8
+        end
+    end
+
+    @testset "jury weight is 2 rho g A l (1 + weight_frac_added) of the bare area, and the moment uses the total weight" begin
+        for (ac, frac) in ((with_fractions, 0.60), (without_fractions, 0.0))
+            jury = ac.wing.jury
+            @test jury.weight_frac_added == frac
+            @test jury.area > 0
+            @test jury.weight ≈ 2 * jury.material.ρ * TASOPT.gee * jury.area * jury.length * (1 + frac) rtol = 1e-6
+            @test jury.dxW ≈ jury.weight * jury_dx_arm(ac) rtol = 1e-6
+        end
+        @test without_fractions.wing.jury.weight ≈ bare_weight(without_fractions.wing.jury) rtol = 1e-6
+    end
+
+    @testset "size_jury! scales the weight and the moment exactly by (1 + weight_frac_added) and leaves the area alone" begin
+        ac = with_fractions
+        etao, etas = ac.wing.layout.ηo, ac.wing.layout.ηs
+        sinL, cosL = sind(ac.wing.layout.sweep), cosd(ac.wing.layout.sweep)
+        function sized_jury(frac)
+            wing = deepcopy(ac.wing)
+            wing.jury.weight_frac_added = frac
+            st.size_jury!(wing, etao, etas, ac.parg[igsigfac], sinL, cosL)
+            return wing.jury
+        end
+        j0, j1, j2 = sized_jury(0.0), sized_jury(0.3), sized_jury(1.0)
+        @test j0.weight ≈ bare_weight(j0) rtol = 1e-12
+        @test j1.weight ≈ 1.3 * j0.weight rtol = 1e-12
+        @test j2.weight ≈ 2.0 * j0.weight rtol = 1e-12
+        @test j1.dxW ≈ 1.3 * j0.dxW rtol = 1e-12
+        @test j2.dxW ≈ 2.0 * j0.dxW rtol = 1e-12
+        @test j1.area == j0.area == j2.area
+        @test j1.length == j0.length
+        @test j1.buckling_load == j0.buckling_load
+    end
+
+    @testset "reference: share of the strut and jury in the wing group weight" begin
+        # Information only (Boeing SUGAR Phase IV: about 28 to 30 %); not asserted
+        ac = try
+            sized_braced_aircraft()
+        catch
+            nothing
+        end
+        if !isnothing(ac)
+            Wstrut, Wjury, Wwing = ac.wing.strut.weight, ac.wing.jury.weight, ac.wing.weight
+            share = (Wstrut + Wjury) / (Wwing + Wstrut + Wjury)
+            @info "strut-braced default_tbw: (W_strut + W_jury) / (W_wing + W_strut + W_jury) = $(round(100 * share, digits = 1)) %"
+        end
+        @test true
+    end
+end
+
+# Fuselage reinforcement at the strut attachment: a weight fraction of the largest vertical strut reaction of the
+# wing sizing cases (previous sizing iteration), added to the fuselage weight and moment.
+# The reinforcement is lumped at the wing-box x (not yet a distributed local frame model).
+
+"Default input text for `config` without the `weight_frac_strut_attach` key, and with `line` below [Fuselage.Weights] if given."
+function toml_with_strut_attach_fraction(config, line = "")
+    txt = replace(toml_with_wing_config(config), r"^[ \t]*weight_frac_strut_attach[ \t]*=.*\n"m => "")
+    return isempty(line) ? txt : insert_below_header(txt, "Fuselage.Weights", line)
+end
+
+@testset "fuselage strut-attach reinforcement" verbose=true begin
+    attach_fraction(txt) = first(read_aircraft_from_text(txt)).fuselage.weight_frac_strut_attach
+
+    @testset "sized braced aircraft: the reinforcement is the fraction of the vertical strut reaction, at the wing box" begin
+        for ac in (sized_braced_aircraft(), sized_jury_aircraft("truss_braced"))
+            reinforcement = ac.fuselage.strut_attach
+            fraction = ac.fuselage.weight_frac_strut_attach
+            reaction = ac.wing.strut.reaction_vertical
+            @test fraction == 0.05
+            @test isfinite(reaction)
+            @test reaction > 0
+            @test reinforcement.W > 0
+            # the reinforcement is sized with the reaction of the previous sizing iteration
+            @test reinforcement.W ≈ fraction * reaction rtol = 1e-3
+            @test reinforcement.x ≈ ac.wing.layout.box_x rtol = 1e-3
+        end
+    end
+
+    @testset "the reinforcement adds to the fuselage weight" begin
+        with_fraction = sized_braced_aircraft()
+        # the same aircraft without the reinforcement, sized again
+        without = sized_braced_aircraft(:strut_attach_zero, ac -> (ac.fuselage.weight_frac_strut_attach = 0.0))
+
+        @test without.fuselage.weight_frac_strut_attach == 0.0
+        @test without.fuselage.strut_attach.W == 0
+        @test without.wing.strut.reaction_vertical > 0
+
+        # the fuselage load-path feedback of the sizing loop changes the rest of the fuselage a little,
+        # so the difference equals the reinforcement only roughly
+        W_attach = with_fraction.fuselage.strut_attach.W
+        @test W_attach > 0
+        @test with_fraction.fuselage.weight > without.fuselage.weight
+        @test with_fraction.fuselage.weight - without.fuselage.weight ≈ W_attach rtol = 0.5
+        @test with_fraction.fuselage.moment > without.fuselage.moment
+        @test with_fraction.parg[igWMTO] > without.parg[igWMTO]
+    end
+
+    @testset "a cantilever has no reinforcement and no strut reaction" begin
+        ac = sized_default_aircraft()
+        @test ac.fuselage.weight_frac_strut_attach == 0.0
+        @test ac.fuselage.strut_attach.W == 0
+        @test ac.wing.strut.reaction_vertical == 0
+    end
+
+    @testset "TOML: the default depends on the wing configuration, an explicit key wins" begin
+        @test attach_fraction(toml_with_strut_attach_fraction("cantilever")) == 0.0
+        @test attach_fraction(toml_with_strut_attach_fraction("strut_braced")) == 0.05
+        @test attach_fraction(toml_with_strut_attach_fraction("truss_braced")) == 0.05
+
+        @test attach_fraction(toml_with_strut_attach_fraction("strut_braced", "weight_frac_strut_attach = 0.2")) == 0.2
+        @test attach_fraction(toml_with_strut_attach_fraction("truss_braced", "weight_frac_strut_attach = 0.0")) == 0.0
+        @test attach_fraction(toml_with_strut_attach_fraction("cantilever", "weight_frac_strut_attach = 0.1")) == 0.1
+    end
+
+    @testset "save and read reproduce the fraction exactly" begin
+        for (config, line, expected) in (("strut_braced", "", 0.05),
+                                         ("truss_braced", "weight_frac_strut_attach = 0.0123", 0.0123),
+                                         ("cantilever", "", 0.0))
+            ac = first(read_aircraft_from_text(toml_with_strut_attach_fraction(config, line)))
+            @test ac.fuselage.weight_frac_strut_attach == expected
+            mktempdir() do dir
+                path = joinpath(dir, "strut_attach_roundtrip.toml")
+                save_aircraft_model(ac, path)
+                saved = TASOPT.TOML.parsefile(path)
+                @test saved["Fuselage"]["Weights"]["weight_frac_strut_attach"] == expected
+                @test attach_fraction(read(path, String)) == expected
+            end
+        end
+    end
 end
 
 @testset "a sized cantilever wing has no strut or jury results" begin
     ac = sized_default_aircraft()
     strut, sl = ac.wing.strut, ac.wing.sizing_loads
     @test strut.axial_force_compression == 0
+    @test strut.weight == 0
+    @test strut.dxW == 0
     @test sl.governing_strut == :none
     @test sl.governing_strut_compression == :none
     @test strut.EI_min == 0
