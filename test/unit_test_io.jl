@@ -87,8 +87,8 @@
     @test size(csv1,1) == 4 #4 rows w default indices
     @test size(csv2,1) == 1 #1 row with addl indices (all)
 
-    @test length(csv1[1]) == 905 # = entries w/ full ac `struct` and in default_output_indices
-    @test length(csv2[1]) == 1271 # = entries w/ full ac `struct` and all output_indices
+    @test length(csv1[1]) == 966 # = entries w/ full ac `struct` and in default_output_indices
+    @test length(csv2[1]) == 1332 # = entries w/ full ac `struct` and all output_indices
 
     #test the nested vectors within par arrays
     #a: row 1 in both csvs matches the design cruise point/mission 
@@ -132,21 +132,21 @@
         end
 
         #default keys leave the strut material unchanged
-        @test same_alloy(ac_def.wing.strut.material, al_default)
+        @test same_alloy(ac_def.wing.strut.caps.material, al_default)
 
-        #changed keys build the strut material, without touching the caps
+        #changed keys build the strut caps material, without touching the wing caps
         ac_strut = read_toml_edit(txt -> replace(txt,
             "strut_material = \"TASOPT-Al\"" => "strut_material = \"Al-7075\"",
             "strut_max_avg_stress = 1.1" => "strut_max_avg_stress = 1.2",
             "strut_safety_factor = 1.5" => "strut_safety_factor = 2.0"))
         al7075 = StructuralAlloy("Al-7075", max_avg_stress = 1.2, safety_factor = 2.0)
-        @test same_alloy(ac_strut.wing.strut.material, al7075)
-        @test ac_strut.wing.strut.material.σmax ≈ al7075.YTS / 1.2 / 2.0
+        @test same_alloy(ac_strut.wing.strut.caps.material, al7075)
+        @test ac_strut.wing.strut.caps.material.σmax ≈ al7075.YTS / 1.2 / 2.0
         @test same_alloy(ac_strut.wing.inboard.caps.material, ac_def.wing.inboard.caps.material)
 
         #legacy strut stress key is ignored
         ac_legacy = read_toml_edit(txt -> replace(txt, "sigma_struts  = \"30e3 lbf/in2\"" => "sigma_struts  = \"10e3 lbf/in2\""))
-        @test ac_legacy.wing.strut.material.σmax == ac_def.wing.strut.material.σmax
+        @test ac_legacy.wing.strut.caps.material.σmax == ac_def.wing.strut.caps.material.σmax
     end
 
 end #testset "io"
