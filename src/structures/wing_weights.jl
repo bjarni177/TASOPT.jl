@@ -406,7 +406,7 @@ strut height ``z`` (`wing.strut.z`) and its wing attachment is ``\\eta_o + \\eta
 The area is the larger of the yield area, from the jury material `σmax`, and the Euler buckling area for a pinned member
 (``K = 1``) of the jury material and the section idealisation of the main strut ([`strut_inertia_coefficient`](@ref)),
 with the ultimate factor equal to the jury material safety factor.
-The weight is the bare member weight of both wings, without `weight_frac_added`. Its moment `jury.dxW` is the weight times the
+The weight is the member weight of n_wings times ``1 + f_{added}`` (`jury.weight_frac_added`), with the bare area. Its moment `jury.dxW` is the weight times the
 streamwise offset of the wing attachment station `jury.eta_wing` from the wing box root, ``0.5\\,b\\,(\\eta_{wing} - \\eta_o) \\tan\\Lambda``,
 with the wing span ``b`` and sweep ``\\Lambda``.
 
@@ -419,7 +419,7 @@ with the wing span ``b`` and sweep ``\\Lambda``.
     - `sinL::Float64`: Sine of the wing sweep.
     - `cosL::Float64`: Cosine of the wing sweep.
 """
-function size_jury!(wing, etao, etas, sigfac, sinL, cosL)
+function size_jury!(wing, etao, etas, sigfac, sinL, cosL; n_wings = 2.0)
     jury, strut = wing.jury, wing.strut
 
     jury.eta_wing = etao + jury.eta_strut * (etas - etao)
@@ -432,8 +432,7 @@ function size_jury!(wing, etao, etas, sigfac, sinL, cosL)
     jury.area = max(A_yield, A_buckling)
     jury.buckling_load = euler_buckling_load(jury.material.E * k * jury.area^2, 1.0, jury.length)
 
-    # weight_frac_added is not applied yet
-    jury.weight = 2.0 * jury.material.ρ * gee * jury.area * jury.length
+    jury.weight = n_wings * jury.material.ρ * gee * jury.area * jury.length * (1.0 + jury.weight_frac_added)
     jury.dxW = jury.weight * 0.5 * wing.layout.span * (jury.eta_wing - etao) * sinL / cosL
     return nothing
 end # size_jury!
@@ -962,6 +961,7 @@ function wing_weights!(wing, po, gammat, gammas,
         if wing isa Wing # Tail has no strut
             wing.strut.cos_lambda = 1.0
             wing.strut.axial_force_compression = 0.0
+            wing.strut.reaction_vertical = 0.0
         end
 
     else
@@ -999,6 +999,9 @@ function wing_weights!(wing, po, gammat, gammas,
         # The compression is scaled by lsp/ls like the tension: it is the force along the total (swept, 3-D)
         # strut length lsp, whereas the strut force of the load cases is in the plane, along the length ls.
         wing.strut.axial_force_compression = Tstrut_compression*lsp/ls
+        # Largest vertical reaction of both struts on the fuselage: the in-plane strut force of one wing (tension or
+        # compression, the largest magnitude over the cases) times z/ls
+        wing.strut.reaction_vertical = n_wings*max(Tstrut, abs(Tstrut_compression))*wing.strut.z/ls
         wing.strut.length = lsp
         # The strut is sized by the larger of the yield area, from the larger of the tension and the
         # compression, and the Euler buckling area
@@ -1011,9 +1014,11 @@ function wing_weights!(wing, po, gammat, gammas,
         wing.strut.buckling_load = euler_buckling_load(wing.strut.EI_min, wing.strut.end_fixity_K, l_buckling)
         # `:tension` also covers the yield in compression, which sets the area in the same way
         wing.strut.sizing_criterion = A_buckling > A_yield ? :buckling : :tension
-        wing.strut.weight   = 2.0*wing.strut.material.ρ*gee*wing.strut.area*lsp
+        # The strut weight is the bare member weight of both wings times the added weight fraction (fairings and fittings);
+        # the area stays bare, and the weight moment uses the total weight
+        wing.strut.weight   = n_wings*wing.strut.material.ρ*gee*wing.strut.area*lsp*(1.0 + wing.strut.weight_frac_added)
         wing.strut.dxW = wing.strut.weight * 0.25*wing.layout.span*(etas-etao) * sinL/cosL
-        has_jury && size_jury!(wing, etao, etas, sigfac, sinL, cosL)
+        has_jury && size_jury!(wing, etao, etas, sigfac, sinL, cosL; n_wings = n_wings) 
     end
 
     Abfuels = calc_sparbox_internal_area(wing.inboard.cross_section.width_to_chord,
