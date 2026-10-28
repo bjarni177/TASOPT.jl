@@ -193,6 +193,10 @@
 
     fixed_weight = "3000 lbf" #cockpit, pilots etc
 
+    # Fuselage reinforcement at the strut attachment, W = weight_frac_strut_attach * R, with R the largest vertical
+    # reaction of both struts on the fuselage [N]. Lumped at the wing-box x. 0.05 is a PLACEHOLDER.
+    weight_frac_strut_attach = 0.05
+
     window_per_length     = 435.0 #[N/m]
     window_insul_per_area =  22.0 #[N/m2]
     floor_weight_per_area =  60.0 #[N/m2]
@@ -259,12 +263,13 @@
     # (NASA CR-2015-218704) and Phase IV (NASA CR 20220016017), see SUGAR_STRUT_FINDINGS.md. A box value is an
     # upper bound for a laced truss member; to be refined by literature review.
     truss_inertia_efficiency = 0.92 # strut section second moment of area relative to the ideal section A d^2/4
-    weight_frac_added       = 0.60 # added weight fraction for fairings and fittings
+    weight_frac_added       = 0.60 # added weight fraction for fairings and fittings (placeholder)
 
 [Wing.Jury]
     # Vertical jury strut. Only used if `wing_config` is "truss_braced" (this file is strut_braced)
     # A coarse scan of eta_strut from 0.05 to 0.95 in steps of 0.05 (truss_braced, panel break eta_s = 0.6, 0.7, 0.75) gives the minimum WMTO and PFEI at 0.5 in every case. The optimum is a sharp V because the main-strut buckling length is max(eta_strut, 1-eta_strut) times the strut length, and the jury weight is negligible (0.02-0.1 % of the wing structure), so the jury position is set by that symmetry only.
     eta_strut = 0.5 # position of the jury along the strut as a fraction of the strut length, from the fuselage end
+    weight_frac_added = 0.30 # added weight fraction for fairings and fittings of the jury (placeholder)
 
 [Wing.Aero]
     fuselage_lift_carryover_loss_factor = -0.3
