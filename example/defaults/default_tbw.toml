@@ -236,6 +236,9 @@
     hweb_to_hbox = 0.75 #web-height/hbox ratio
     spar_box_x_c = 0.40 # spar box axis x/c location
 
+    # min_cap_thickness and min_web_thickness are omitted: the braced defaults of 0.0015 m (cap) and
+    # 0.0010 m (web) apply. They are thin placeholders that should be reviewed separately.
+
     x_wing_box = "57 ft"
     z_wing  = "5.5 ft" # TBW: high wing, box centre near the top of the fuselage (radius 77 in). Positive is above the fuselage axis
 
@@ -252,7 +255,16 @@
     box_width_to_chord      = 0.5 # strut box width to chord ratio
     web_to_box_height       = 0.75 # strut box web height to box height ratio
     end_fixity_K            = 1.0 # Euler effective-length factor of the strut end fixity
+    # 0.92: centre of the closed composite box estimates I_min/(A d^2/4) = 0.88-0.97 derived from SUGAR Phase II
+    # (NASA CR-2015-218704) and Phase IV (NASA CR 20220016017), see SUGAR_STRUT_FINDINGS.md. A box value is an
+    # upper bound for a laced truss member; to be refined by literature review.
+    truss_inertia_efficiency = 0.92 # strut section second moment of area relative to the ideal section A d^2/4
     weight_frac_added       = 0.60 # added weight fraction for fairings and fittings
+
+[Wing.Jury]
+    # Vertical jury strut. Only used if `wing_config` is "truss_braced" (this file is strut_braced)
+    # A coarse scan of eta_strut from 0.05 to 0.95 in steps of 0.05 (truss_braced, panel break eta_s = 0.6, 0.7, 0.75) gives the minimum WMTO and PFEI at 0.5 in every case. The optimum is a sharp V because the main-strut buckling length is max(eta_strut, 1-eta_strut) times the strut length, and the jury weight is negligible (0.02-0.1 % of the wing structure), so the jury position is set by that symmetry only.
+    eta_strut = 0.5 # position of the jury along the strut as a fraction of the strut length, from the fuselage end
 
 [Wing.Aero]
     fuselage_lift_carryover_loss_factor = -0.3
