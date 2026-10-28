@@ -5,7 +5,7 @@
       bv, λv,nvtail,
       xhtail,xvtail,
       xwing,xwbox,cbox,
-      xeng)
+      xeng; strut_reaction_vertical = 0.0)
 
 `fusew` sizes the fuselage and calculates the component weights and structural properties.
 It takes inputs related to geometry, fixed weights, material properties, and more to compute the fuselage dimensions, weights, and other parameters.
@@ -43,6 +43,8 @@ It takes inputs related to geometry, fixed weights, material properties, and mor
       - `xwing::Float64`: X location of the wing.
       - `xwbox::Float64`: X location of the wing box.
       - `cbox::Float64`: Wing box width.
+      - `strut_reaction_vertical::Float64`: (keyword, default 0) Largest vertical reaction of both struts on the fuselage [N],
+        `wing.strut.reaction_vertical` of the previous sizing iteration. Srut attachees to the fuselage belly
 
       **Outputs:**
       Pressurized cabin volume:
@@ -56,7 +58,7 @@ function fusew!(fuse,Nland,Wpay,Weng, nftanks,
       bv, λv,nvtail,
       xhtail,xvtail,
       xwing,xwbox,cbox,
-      xeng)
+      xeng; strut_reaction_vertical = 0.0)
 
       layout = fuse.layout
 
@@ -80,6 +82,11 @@ function fusew!(fuse,Nland,Wpay,Weng, nftanks,
       xWapu  = y_moment(fuse.APU)
       xWseat = fuse.seat.W * x_cabin
       xWpadd = fuse.added_payload.W * x_cabin
+
+#--- reinforcement at the strut attachment, lumped at the wing-box x (see the docstring)
+      W_strut_attach = fuse.weight_frac_strut_attach * strut_reaction_vertical
+      fuse.strut_attach = iszero(W_strut_attach) ? Weight() : Weight(W = W_strut_attach, x = xwbox)
+      xWstrutattach = y_moment(fuse.strut_attach)
 
 #--------------------------------------------------------------------
 #--- floor structural sizing
@@ -215,11 +222,12 @@ function fusew!(fuse,Nland,Wpay,Weng, nftanks,
 #--- overall fuse weight and moment
       fuse.weight = fuse.fixed.W + fuse.APU.W + fuse.added_payload.W + fuse.seat.W +
              fuse.shell.weight.W + fuse.cone.weight.W + fuse.window.W + fuse.insulation.W + fuse.floor.weight.W+
-             fuse.bendingmaterial_h.weight.W + fuse.bendingmaterial_v.weight.W
+             fuse.bendingmaterial_h.weight.W + fuse.bendingmaterial_v.weight.W +
+             fuse.strut_attach.W
 
       fuse.moment = xWfix + xWapu + xWpadd + xWseat+
       y_moment(fuse.shell.weight) + xWcone + y_moment(fuse.window) + y_moment(fuse.insulation) + xWfloor+
-             xWhbend + xWvbend 
+             xWhbend + xWvbend + xWstrutattach
 
 #----------------------------------------------------------------
 #--- pressurized cabin volume
