@@ -126,7 +126,7 @@ $TYPEDFIELDS
     weight::Float64 = 0
     """Added weight fraction for fairings and fittings"""
     weight_frac_added::Float64 = 0.60 # Placeholder - Assumed to be the same value as for the main strut
-    """Aircraft pitching moment contribution from the weight distribution of the jury strut [N m]"""
+    """Aircraft pitching moment contribution from the weight distribution of the jury strut [N m], computed by `size_jury!`"""
     dxW::Float64 = 0
 end
 
