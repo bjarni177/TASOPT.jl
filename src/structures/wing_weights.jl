@@ -397,16 +397,18 @@ A conventional bracing-force fraction for a member that only restrains the main 
 const jury_load_fraction = 0.02
 
 """
-    size_jury!(wing, etao, etas, sigfac)
+    size_jury!(wing, etao, etas, sigfac, sinL, cosL)
 
-Sizes the vertical jury strut `wing.jury` of a truss-braced wing and sets its geometry, axial force, area, buckling load
-and weight. The jury is a lateral support only, so its load is the fraction `jury_load_fraction` of the compression
+Sizes the vertical jury strut `wing.jury` of a truss-braced wing and sets its geometry, axial force, area, buckling load,
+weight and weight moment. The jury is a lateral support only, so its load is the fraction `jury_load_fraction` of the compression
 of the main strut (`wing.strut.axial_force_compression`), taken as compression. Its length is ``z (1 - \\eta_{strut})`` with the
 strut height ``z`` (`wing.strut.z`) and its wing attachment is ``\\eta_o + \\eta_{strut} (\\eta_s - \\eta_o)``.
 The area is the larger of the yield area, from the jury material `σmax`, and the Euler buckling area for a pinned member
 (``K = 1``) of the jury material and the section idealisation of the main strut ([`strut_inertia_coefficient`](@ref)),
 with the ultimate factor equal to the jury material safety factor.
-The weight is the bare member weight of both wings, without `weight_frac_added`, and is not yet included in the aircraft weight.
+The weight is the bare member weight of both wings, without `weight_frac_added`. Its moment `jury.dxW` is the weight times the
+streamwise offset of the wing attachment station `jury.eta_wing` from the wing box root, ``0.5\\,b\\,(\\eta_{wing} - \\eta_o) \\tan\\Lambda``,
+with the wing span ``b`` and sweep ``\\Lambda``.
 
 !!! details "🔃 Inputs and Outputs"
     **Inputs:**
@@ -414,8 +416,10 @@ The weight is the bare member weight of both wings, without `weight_frac_added`,
     - `etao::Float64`: Non-dimensional span coordinate of the wing root station.
     - `etas::Float64`: Non-dimensional span coordinate of the strut attachment.
     - `sigfac::Float64`: Stress Factor.
+    - `sinL::Float64`: Sine of the wing sweep.
+    - `cosL::Float64`: Cosine of the wing sweep.
 """
-function size_jury!(wing, etao, etas, sigfac)
+function size_jury!(wing, etao, etas, sigfac, sinL, cosL)
     jury, strut = wing.jury, wing.strut
 
     jury.eta_wing = etao + jury.eta_strut * (etas - etao)
@@ -428,8 +432,9 @@ function size_jury!(wing, etao, etas, sigfac)
     jury.area = max(A_yield, A_buckling)
     jury.buckling_load = euler_buckling_load(jury.material.E * k * jury.area^2, 1.0, jury.length)
 
-    # Not yet included in the aircraft weight build-up; weight_frac_added is not applied yet and dxW is left at zero
+    # weight_frac_added is not applied yet
     jury.weight = 2.0 * jury.material.ρ * gee * jury.area * jury.length
+    jury.dxW = jury.weight * 0.5 * wing.layout.span * (jury.eta_wing - etao) * sinL / cosL
     return nothing
 end # size_jury!
 
@@ -1008,8 +1013,7 @@ function wing_weights!(wing, po, gammat, gammas,
         wing.strut.sizing_criterion = A_buckling > A_yield ? :buckling : :tension
         wing.strut.weight   = 2.0*wing.strut.material.ρ*gee*wing.strut.area*lsp
         wing.strut.dxW = wing.strut.weight * 0.25*wing.layout.span*(etas-etao) * sinL/cosL
-        # The jury weight is not yet included in the aircraft weight build-up
-        has_jury && size_jury!(wing, etao, etas, sigfac)
+        has_jury && size_jury!(wing, etao, etas, sigfac, sinL, cosL)
     end
 
     Abfuels = calc_sparbox_internal_area(wing.inboard.cross_section.width_to_chord,
