@@ -1254,6 +1254,89 @@ end
     end
 end
 
+@testset "jury strut weight in the aircraft weight build-up" verbose=true begin
+    function size_wing(config)
+        ac = read_aircraft_with_wing_config(config)
+        ac.wing.layout.ηs = 0.7
+        CoreLogging.with_logger(CoreLogging.NullLogger()) do
+            size_aircraft!(ac, printiter = false)
+        end
+        return ac
+    end
+    truss = size_wing("truss_braced")
+
+    # Pitching-moment arm of the jury about the wing-box x: the jury hangs at eta_wing, on the swept wing
+    jury_dx_arm(ac) = 0.5 * ac.wing.layout.span * (ac.wing.jury.eta_wing - ac.wing.layout.ηo) * tand(ac.wing.layout.sweep)
+
+    # Copy of `ac` with `extra_weight` [N] added to the jury and its moment set for the same arm
+    function with_extra_jury_weight(ac, extra_weight)
+        heavier = deepcopy(ac)
+        heavier.wing.jury.weight += extra_weight
+        heavier.wing.jury.dxW = heavier.wing.jury.weight * jury_dx_arm(heavier)
+        return heavier
+    end
+
+    @testset "the jury moment is its weight times the arm to its spanwise station on the swept wing" begin
+        jury = truss.wing.jury
+        @test jury.weight > 0
+        @test jury.dxW ≈ jury.weight * jury_dx_arm(truss) rtol = 1e-8
+        for config in ("strut_braced", "cantilever")
+            ac = size_wing(config)
+            @test ac.wing.jury.weight == 0
+            @test ac.wing.jury.dxW == 0
+        end
+    end
+
+    @testset "update_weights! scales the jury weight with WMTO like the strut weight" begin
+        extra = 5e4
+        heavier = with_extra_jury_weight(truss, extra)
+        reference = deepcopy(truss)
+        WMTO0 = truss.parg[igWMTO]
+        TASOPT.update_weights!(reference, 1.0)
+        TASOPT.update_weights!(heavier, 1.0)
+
+        # the jury is part of the weight fraction closure: (Wpay + Wfuse) / WMTO = 1 - sum of fractions
+        payload_and_fuselage = truss.parg[igWpay] + truss.fuselage.weight
+        fraction_sum = 1 - payload_and_fuselage / reference.parg[igWMTO]
+        @test heavier.parg[igWMTO] ≈ payload_and_fuselage / (1 - fraction_sum - extra / WMTO0) rtol = 1e-8
+        @test heavier.parg[igWMTO] > reference.parg[igWMTO]
+
+        # each component keeps its fraction of WMTO
+        @test heavier.wing.jury.weight / heavier.parg[igWMTO] ≈ (truss.wing.jury.weight + extra) / WMTO0 rtol = 1e-8
+        @test heavier.wing.strut.weight / heavier.parg[igWMTO] ≈ truss.wing.strut.weight / WMTO0 rtol = 1e-8
+    end
+
+    @testset "a heavier jury at its station moves the CG limits towards it" begin
+        extra = 1e5
+        heavier = with_extra_jury_weight(truss, extra)
+        _, _, _, _, xCG_fwd, xCG_aft = TASOPT.CG_limits(truss)
+        _, _, _, _, xCG_fwd_heavier, xCG_aft_heavier = TASOPT.CG_limits(heavier)
+
+        # the extra weight acts at the wing box plus its moment arm, between the forward and aft limits
+        x_jury = heavier.wing.layout.box_x + jury_dx_arm(heavier)
+        @test xCG_fwd < x_jury < xCG_aft
+        @test xCG_fwd < xCG_fwd_heavier < x_jury
+        @test x_jury < xCG_aft_heavier < xCG_aft
+    end
+
+    @testset "size_htail accounts for the jury weight and moment" begin
+        extra = 1e5
+        function size_tail!(ac)
+            para = view(ac.para, :, :, 1)
+            TASOPT.size_htail(ac, view(para, :, ipdescentn), view(para, :, ipcruise1), view(para, :, ipcruise1))
+            return ac
+        end
+        base = size_tail!(deepcopy(truss))
+        heavier = size_tail!(with_extra_jury_weight(truss, extra))
+
+        _, _, _, _, xCG_fwd_heavier, xCG_aft_heavier = TASOPT.CG_limits(with_extra_jury_weight(truss, extra))
+        @test heavier.parg[igxCGfwd] ≈ xCG_fwd_heavier rtol = 1e-10
+        @test heavier.parg[igxCGaft] ≈ xCG_aft_heavier rtol = 1e-10
+        @test heavier.parg[igxCGfwd] > base.parg[igxCGfwd]
+        @test abs(heavier.htail.layout.S - base.htail.layout.S) > 1e-3 * base.htail.layout.S
+    end
+end
+
 @testset "Tail has no strut" verbose=true begin
     @testset "Tail struct" begin
         @test !hasfield(TASOPT.structures.Tail, :has_strut)
