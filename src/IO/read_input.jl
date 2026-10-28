@@ -623,15 +623,19 @@ readwing(x) = read_input(x, wing_i, dwing)
         wing.strut.y_root = Distance(readstrut("y_fuselage_attach"))
         wing.strut.thickness_to_chord = readstrut("thickness_to_chord")
         wing.strut.local_velocity_ratio = readstrut("local_velocity_ratio")
-        wing.strut.wall_thickness_to_depth = readstrut("wall_thickness_to_depth")
         wing.strut.box_width_to_chord = readstrut("box_width_to_chord")
         wing.strut.web_to_box_height = readstrut("web_to_box_height")
         wing.strut.end_fixity_K = readstrut("end_fixity_K")
-        wing.strut.truss_inertia_efficiency = readstrut("truss_inertia_efficiency")
         wing.strut.weight_frac_added = readstrut("weight_frac_added")
 
         # If the template lacks the key, the Strut() default is kept.
         dstrut = dwing["Strut"]
+        wing.strut.chord_to_wing_chord = get(strut_i, "chord_to_wing_chord",
+                                             get(dstrut, "chord_to_wing_chord", wing.strut.chord_to_wing_chord))
+        wing.strut.min_cap_thickness = Distance(get(strut_i, "min_cap_thickness",
+                                                    get(dstrut, "min_cap_thickness", wing.strut.min_cap_thickness)))
+        wing.strut.min_web_thickness = Distance(get(strut_i, "min_web_thickness",
+                                                    get(dstrut, "min_web_thickness", wing.strut.min_web_thickness)))
         strut_force_str = (haskey(strut_i, "opt_strut_force") || haskey(dstrut, "opt_strut_force")) ?
             readstrut("opt_strut_force") : string(wing.strut.opt_strut_force)
         strut_force_models = instances(StrutForceModel.T)
@@ -647,6 +651,9 @@ readwing(x) = read_input(x, wing_i, dwing)
         jury_i = get(wing_i, "Jury", Dict{String, Any}())
         wing.jury.eta_strut = get(jury_i, "eta_strut", wing.jury.eta_strut)
         wing.jury.weight_frac_added = get(jury_i, "weight_frac_added", wing.jury.weight_frac_added)
+        wing.jury.chord_to_strut_chord = get(jury_i, "chord_to_strut_chord", wing.jury.chord_to_strut_chord)
+        wing.jury.min_cap_thickness = Distance(get(jury_i, "min_cap_thickness", wing.jury.min_cap_thickness))
+        wing.jury.min_web_thickness = Distance(get(jury_i, "min_web_thickness", wing.jury.min_web_thickness))
     end
 
     ## Wing sizing load cases, one [Wing.SizingLoads.<case>] table per case.
@@ -921,12 +928,29 @@ readstruct(x) = read_input(x, structures, dstructures)
                                 safety_factor = webs_safety_fac)
 
     # The legacy keys `sigma_struts`, `E_struts` and `strut_density` are stale and ignored;
-    # the strut material comes from the three keys below.
+    # the strut cap material comes from the three keys below.
+    strut_material_name = readstruct("strut_material")
     strut_max_avg = readstruct("strut_max_avg_stress")
     strut_safety_fac = readstruct("strut_safety_factor")
-    wing.strut.material = StructuralAlloy(readstruct("strut_material"),
+    strut_caps_material() = StructuralAlloy(strut_material_name,
                                 max_avg_stress = strut_max_avg,
                                 safety_factor = strut_safety_fac)
+    wing.strut.caps.material = strut_caps_material()
+
+    # The strut web material keys are optional; each one defaults to the strut cap value.
+    strut_web_material_name = get(structures, "strut_web_material", strut_material_name)
+    strut_web_max_avg = get(structures, "strut_web_max_avg_stress", strut_max_avg)
+    strut_web_safety_fac = get(structures, "strut_web_safety_factor", strut_safety_fac)
+    strut_webs_material() = StructuralAlloy(strut_web_material_name,
+                                max_avg_stress = strut_web_max_avg,
+                                safety_factor = strut_web_safety_fac)
+    wing.strut.webs.material = strut_webs_material()
+
+    # The jury strut has the materials of the strut
+    if _opt_wing_config == WingConfig.TrussBraced
+        wing.jury.caps.material = strut_caps_material()
+        wing.jury.webs.material = strut_webs_material()
+    end
 
     skin_max_avg = readstruct("skin_max_avg_stress")
     skin_safety_fac = readstruct("skin_safety_factor")
