@@ -127,11 +127,9 @@ wing.strut.axial_force = 0.00000000000000000000
 wing.strut.length = 0.00000000000000000000 
 wing.strut.chord = 0.00000000000000000000 
 wing.strut.y_root = 0.00000000000000000000 
-wing.strut.wall_thickness_to_depth = 0.05000000000000000278 
 wing.strut.box_width_to_chord = 0.50000000000000000000 
 wing.strut.web_to_box_height = 0.75000000000000000000 
 wing.strut.end_fixity_K = 1.00000000000000000000 
-wing.strut.truss_inertia_efficiency = 0.92000000000000003997 
 wing.strut.dihedral = 0.00000000000000000000 
 wing.strut.axial_force_compression = 0.00000000000000000000 
 wing.strut.buckling_load = 0.00000000000000000000 
@@ -358,6 +356,7 @@ Wwing,Wsinn,Wsout,
 wing_cantilever = deepcopy(wing)
 wing_braced = deepcopy(wing)
 wing_braced.strut.z = 154 * in_to_m
+wing_braced.strut.thickness_to_chord = 0.1 # the dumped strut has no box height
 TASOPT.wing_weights!(wing_cantilever, po, gammat, gammas, Nlift, Weng1, 0, 0.0, 0, 0.0, sigfac, rhofuel)
 TASOPT.wing_weights!(wing_braced, po, gammat, gammas, Nlift, Weng1, 0, 0.0, 0, 0.0, sigfac, rhofuel; has_strut = true)
 @test wing_cantilever.strut.cos_lambda == 1.0
