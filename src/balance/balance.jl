@@ -54,6 +54,7 @@ function balance_aircraft!(ac, imission, ip, rfuel, rpay, ξpay, opt_trim_var; L
       Wfuse = fuse.weight
       Wwing = wing.weight
       Wstrut = wing.strut.weight
+      Wjury = wing.jury.weight
       Whtail = htail.weight
       Wvtail = vtail.weight
       Weng = parg[igWeng]
@@ -108,6 +109,7 @@ function balance_aircraft!(ac, imission, ip, rfuel, rpay, ξpay, opt_trim_var; L
           Wftank +
           Wwing +
           Wstrut +
+          Wjury +
           Whtail * Sh / Sh1 +
           Wvtail +
           Weng +
@@ -123,6 +125,7 @@ function balance_aircraft!(ac, imission, ip, rfuel, rpay, ξpay, opt_trim_var; L
       #  Wftank = $(Wftank ) 
       #  Wwing  = $(Wwing  ) 
       #  Wstrut = $(Wstrut ) 
+      #  Wjury  = $(Wjury  ) 
       #  Whtail*Sh/Sh1 = $(Whtail*Sh/Sh1) 
       #  Wvtail  = $(Wvtail  ) 
       #  Weng    = $(Weng    ) 
@@ -146,13 +149,14 @@ function balance_aircraft!(ac, imission, ip, rfuel, rpay, ξpay, opt_trim_var; L
            fuse.moment + xWtesys + xWftank +
            Wwing * wing.layout.box_x + wing.dxW +
            Wstrut * wing.layout.box_x + wing.strut.dxW +
+           Wjury * wing.layout.box_x + wing.jury.dxW +
            (Whtail * htail.layout.box_x + htail.dxW) * Sh / Sh1 +
            Wvtail * vtail.layout.box_x + vtail.dxW +
            Weng * parg[igxeng] +
            Whpesys * fuse.HPE_sys.r.x +
            Wlgmain * (wing.layout.box_x + dxlg) + landing_gear.nose_gear.moment
 
-      xW_xwbox = xWfuel_xwbox + Wwing + Wstrut + Wlgmain
+      xW_xwbox = xWfuel_xwbox + Wwing + Wstrut + Wjury + Wlgmain
 
       xW_Sh = (Whtail * htail.layout.box_x + htail.dxW) / Sh1
 
@@ -364,6 +368,7 @@ function size_htail(ac, paraF, paraB, paraC; Ldebug::Bool = false)
       Wfuse = fuse.weight
       Wwing = wing.weight
       Wstrut = wing.strut.weight
+      Wjury = wing.jury.weight
       Whtail = htail.weight
       Wvtail = vtail.weight
       Weng = parg[igWeng]
@@ -392,6 +397,7 @@ function size_htail(ac, paraF, paraB, paraC; Ldebug::Bool = false)
 
       dxWwing = wing.dxW
       dxWstrut = wing.strut.dxW
+      dxWjury = wing.jury.dxW
       dxWhtail = htail.dxW
       dxWvtail = vtail.dxW
 
@@ -435,6 +441,7 @@ function size_htail(ac, paraF, paraB, paraC; Ldebug::Bool = false)
                Wftank -
                Wwing -
                Wstrut -
+               Wjury -
                Whtail -
                Wvtail -
                Weng -
@@ -472,6 +479,7 @@ function size_htail(ac, paraF, paraB, paraC; Ldebug::Bool = false)
                  Wtesys +
                  Wftank +
                  Wstrut +
+                 Wjury +
                  Whtail +
                  Wvtail +
                  Weng +
@@ -485,6 +493,7 @@ function size_htail(ac, paraF, paraB, paraC; Ldebug::Bool = false)
             xWe = xWfuse + xWtesys + xWftank +
                   Wwing * xwbox + dxWwing +
                   Wstrut * xwbox + dxWstrut +
+                  Wjury * xwbox + dxWjury +
                   Whtail * xhbox + dxWhtail +
                   Wvtail * xvbox + dxWvtail +
                   Weng * xeng +
@@ -495,6 +504,7 @@ function size_htail(ac, paraF, paraB, paraC; Ldebug::Bool = false)
             xWe_Sh = Whtail_Sh * xhbox + dxWhtail_Sh
             xWe_xw = Wwing +
                      Wstrut +
+                     Wjury +
                      Wlgmain
 
 
@@ -729,6 +739,7 @@ function CG_limits(ac; Ldebug::Bool = false)
       Wfuse = fuse.weight
       Wwing = wing.weight
       Wstrut = wing.strut.weight
+      Wjury = wing.jury.weight
       Whtail = htail.weight
       Wvtail = vtail.weight
       Weng = parg[igWeng]
@@ -761,6 +772,7 @@ function CG_limits(ac; Ldebug::Bool = false)
            Wftank +
            Wwing +
            Wstrut +
+           Wjury +
            Whtail +
            Wvtail +
            Weng +
@@ -772,6 +784,7 @@ function CG_limits(ac; Ldebug::Bool = false)
             fuse.moment + parg[igxWtesys] + parg[igxWftank] +
             Wwing * wing.layout.box_x + wing.dxW +
             Wstrut * wing.layout.box_x + wing.strut.dxW +
+            Wjury * wing.layout.box_x + wing.jury.dxW +
             Whtail * htail.layout.box_x + htail.dxW +
             Wvtail * vtail.layout.box_x + vtail.dxW +
             Weng * parg[igxeng] +
