@@ -141,6 +141,7 @@ function save_aircraft_model(ac::TASOPT.aircraft=TASOPT.read_aircraft_model(),
         d_fuse_weights["stringer"] = fuselage.weight_frac_stringers
         d_fuse_weights["additional"] = fuselage.weight_frac_skin_addl
         d_fuse_weights["fixed_weight"] = fuselage.fixed.W
+        d_fuse_weights["weight_frac_strut_attach"] = fuselage.weight_frac_strut_attach
 
         d_fuse_weights["window_per_length"] = fuselage.window_W_per_length
         d_fuse_weights["window_insul_per_area"] = fuselage.insulation_W_per_area
@@ -239,7 +240,8 @@ function save_aircraft_model(ac::TASOPT.aircraft=TASOPT.read_aircraft_model(),
 
     # Jury strut details (only used if the wing is truss braced)
         if options.opt_wing_config == WingConfig.TrussBraced
-            d_wing["Jury"] = Dict("eta_strut" => wing.jury.eta_strut)
+            d_wing["Jury"] = Dict("eta_strut" => wing.jury.eta_strut,
+                                  "weight_frac_added" => wing.jury.weight_frac_added)
         end
 
     # Sizing load cases
@@ -844,6 +846,8 @@ function reset_regression_test(ac)
         @printf(io, "wing.strut.weight = %20.20f \n", wing.strut.weight)
         @printf(io, "wing.dxW = %20.20f \n", wing.dxW)
         @printf(io, "wing.strut.dxW = %20.20f \n", wing.strut.dxW)
+        @printf(io, "wing.jury.weight = %20.20f \n", wing.jury.weight)
+        @printf(io, "wing.jury.dxW = %20.20f \n", wing.jury.dxW)
         @printf(io, "wing.inboard.weight = %20.20f \n", wing.inboard.weight)
         @printf(io, "wing.outboard.weight = %20.20f \n", wing.outboard.weight)
         @printf(io, "wing.inboard.dyW = %20.20f \n", wing.inboard.dyW)
