@@ -60,6 +60,13 @@ $TYPEDFIELDS
     axial_force::Float64 = 0
     """Strut axial force in the most compressive case [N], zero or negative, scaled to the total strut length like `axial_force`"""
     axial_force_compression::Float64 = 0
+    """
+    Largest vertical reaction of both struts on the fuselage over the active wing sizing cases [N]: for each case
+    the in-plane strut force of one wing (`strut_force`, along the in-plane length `ls = sqrt(z^2 + L^2)`) has the
+    vertical component `|strut_force| z / ls`, and the two wings give a factor 2. Zero for a cantilever.
+    Used for the fuselage reinforcement at the strut attachment ([`fusew!`](@ref)).
+    """
+    reaction_vertical::Float64 = 0
     """Strut Euler buckling load P_cr [N]"""
     buckling_load::Float64 = 0
     """Strut minor-axis bending stiffness [N m^2]"""
@@ -76,8 +83,11 @@ $TYPEDFIELDS
     # Weights
     """Strut weight [N]"""
     weight::Float64 = 0
-    """Added weight fraction for fairings and fittings"""
-    weight_frac_added::Float64 = 0.60 # Placeholder - derrived from Boeing SUGAR Phase IV, NASA CR, NTRS 20220016017, Tables 12/16 ... may also contain the weight of the jury strut too
+    """
+    Added weight fraction of the strut [-]: fairings, leading and trailing edge, splitter and fittings, as a fraction of the bare strut box weight.
+    The strut weight is `2 ρ g A l (1 + weight_frac_added)` for both wings. Placeholder value, derived from Boeing SUGAR Phase IV (NASA CR, NTRS 20220016017, Tables 12/16).
+    """
+    weight_frac_added::Float64 = 0.60
     """Aircraft pitching moment contribution from the weight distribution of the strut [N m]"""
     dxW::Float64 = 0
 end
@@ -124,8 +134,11 @@ $TYPEDFIELDS
     # Weights
     """Jury strut weight [N], both wings"""
     weight::Float64 = 0
-    """Added weight fraction for fairings and fittings"""
-    weight_frac_added::Float64 = 0.60 # Placeholder - Assumed to be the same value as for the main strut
+    """
+    Added weight fraction of the jury strut [-] for fairings and fittings, as a fraction of the bare jury weight.
+    The jury weight is `2 ρ g A l (1 + weight_frac_added)` for both wings. Placeholder value, not derived from data. Assumed to be the same as for the strut
+    """
+    weight_frac_added::Float64 = 0.60
     """Aircraft pitching moment contribution from the weight distribution of the jury strut [N m], computed by `size_jury!`"""
     dxW::Float64 = 0
 end
