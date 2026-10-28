@@ -228,11 +228,12 @@ function save_aircraft_model(ac::TASOPT.aircraft=TASOPT.read_aircraft_model(),
                 d_wing_strut["y_fuselage_attach"] = wing.strut.y_root
                 d_wing_strut["thickness_to_chord"] = wing.strut.thickness_to_chord
                 d_wing_strut["local_velocity_ratio"] = wing.strut.local_velocity_ratio
-                d_wing_strut["wall_thickness_to_depth"] = wing.strut.wall_thickness_to_depth
                 d_wing_strut["box_width_to_chord"] = wing.strut.box_width_to_chord
                 d_wing_strut["web_to_box_height"] = wing.strut.web_to_box_height
                 d_wing_strut["end_fixity_K"] = wing.strut.end_fixity_K
-                d_wing_strut["truss_inertia_efficiency"] = wing.strut.truss_inertia_efficiency
+                d_wing_strut["chord_to_wing_chord"] = wing.strut.chord_to_wing_chord
+                d_wing_strut["min_cap_thickness"] = wing.strut.min_cap_thickness
+                d_wing_strut["min_web_thickness"] = wing.strut.min_web_thickness
                 d_wing_strut["opt_strut_force"] = string(wing.strut.opt_strut_force)
                 d_wing_strut["weight_frac_added"] = wing.strut.weight_frac_added
             d_wing["Strut"] = d_wing_strut
@@ -241,7 +242,10 @@ function save_aircraft_model(ac::TASOPT.aircraft=TASOPT.read_aircraft_model(),
     # Jury strut details (only used if the wing is truss braced)
         if options.opt_wing_config == WingConfig.TrussBraced
             d_wing["Jury"] = Dict("eta_strut" => wing.jury.eta_strut,
-                                  "weight_frac_added" => wing.jury.weight_frac_added)
+                                  "weight_frac_added" => wing.jury.weight_frac_added,
+                                  "chord_to_strut_chord" => wing.jury.chord_to_strut_chord,
+                                  "min_cap_thickness" => wing.jury.min_cap_thickness,
+                                  "min_web_thickness" => wing.jury.min_web_thickness)
         end
 
     # Sizing load cases
@@ -413,27 +417,24 @@ function save_aircraft_model(ac::TASOPT.aircraft=TASOPT.read_aircraft_model(),
         d_struct["sigma_caps"] = wing.inboard.caps.σ
         d_struct["tau_webs"] = wing.inboard.webs.σ
 
-        #d_struct["sigma_struts"] = wing.strut.material.σmax
-        
         d_struct["fuse_shell_modulus_ratio"] = fuselage.ratio_young_mod_fuse_bending
         
         d_struct["E_wing_spar_cap"] = wing.inboard.caps.material.E
-        #d_struct["E_struts"] = wing.strut.material.E
         
         # Structural material densities
         d_struct["skin_density"] = fuselage.skin.ρ
         d_struct["fuse_stringer_density"] = fuselage.bendingmaterial_h.ρ
         d_struct["wing_tail_cap_density"] = wing.inboard.caps.ρ
         d_struct["wing_tail_web_density"] = wing.inboard.webs.ρ
-        #d_struct["strut_density"] = wing.strut.material.ρ
 
-        # `sigma_struts`, `E_struts` and `strut_density` above are stale and ignored on read.
+        # The legacy keys `sigma_struts`, `E_struts` and `strut_density` are not saved and are ignored on read.
         # Each material is saved with its own stress and safety factors. The wing caps and webs
         # are saved from the inboard section, as the factors are read once for both sections.
         structural_materials = (
             caps = wing.inboard.caps.material,
             webs = wing.inboard.webs.material,
-            strut = wing.strut.material,
+            strut = wing.strut.caps.material,
+            strut_web = wing.strut.webs.material,
             skin = fuselage.skin.material,
             cone = fuselage.cone.material,
             bending = fuselage.bendingmaterial_h.material,
