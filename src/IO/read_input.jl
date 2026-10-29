@@ -189,17 +189,6 @@ if !(typeof(engloc) <: AbstractString && engloc in ["wing", "fuselage"])
         > \"fuselage\" - engines on aft fuselage")
 end
 
-trefftz_resolution_str = read_input("trefftz_resolution", options, doptions)
-trefftz_k_tip = read_input("trefftz_k_tip", options, doptions)
-trefftz_bunch = read_input("trefftz_bunch", options, doptions)
-wing_root_contraction = read_input("wing_root_contraction", options, doptions)
-tail_root_contraction = read_input("tail_root_contraction", options, doptions)
-TREFFTZ_CONFIG = aerodynamics.get_trefftz_config(trefftz_resolution_str;
-                                                  k_tip=trefftz_k_tip,
-                                                  bunch=trefftz_bunch,
-                                                  wing_root_contraction=wing_root_contraction,
-                                                  tail_root_contraction=tail_root_contraction)
-
 # Wing bracing configuration. The legacy [Wing] has_strut key is only honored if the user file sets it
 legacy_has_strut = get(get(data, "Wing", Dict()), "has_strut", nothing)
 if haskey(options, "wing_config") || isnothing(legacy_has_strut)
@@ -218,6 +207,18 @@ else
           "(\"cantilever\", \"strut_braced\" or \"truss_braced\") instead."
     _opt_wing_config = legacy_has_strut ? WingConfig.StrutBraced : WingConfig.Cantilever
 end
+
+trefftz_resolution_str = read_input("trefftz_resolution", options, doptions)
+trefftz_k_tip = read_input("trefftz_k_tip", options, doptions)
+trefftz_bunch = read_input("trefftz_bunch", options, doptions)
+wing_root_contraction = read_input("wing_root_contraction", options, doptions)
+tail_root_contraction = read_input("tail_root_contraction", options, doptions)
+TREFFTZ_CONFIG = aerodynamics.get_trefftz_config(trefftz_resolution_str;
+                                                  braced=_opt_wing_config != WingConfig.Cantilever,
+                                                  k_tip=trefftz_k_tip,
+                                                  bunch=trefftz_bunch,
+                                                  wing_root_contraction=wing_root_contraction,
+                                                  tail_root_contraction=tail_root_contraction)
 
 
 # Fuel related options
