@@ -10,8 +10,10 @@ Wing Strut
 $TYPEDFIELDS
 """
 @kwdef mutable struct Strut
-    """Strut Material """
-    material::StructuralAlloy = StructuralAlloy("TASOPT-Al")
+    """Strut box caps (top and bottom): material and, once sized, thickness and weight"""
+    caps::StructuralMember = StructuralMember(material = StructuralAlloy("TASOPT-Al"))
+    """Strut box webs: material and, once sized, thickness and weight"""
+    webs::StructuralMember = StructuralMember(material = StructuralAlloy("TASOPT-Al"))
 
     # Geometry inputs
     """Strut Area [m^2] """
@@ -22,22 +24,21 @@ $TYPEDFIELDS
     y_root::Float64 = 0
     """Strut thickness to chord"""
     thickness_to_chord::Float64 = 0
-    """Strut box wall thickness to depth ratio"""
-    wall_thickness_to_depth::Float64 = 0.05
+    """
+    Strut chord as a fraction of the wing chord at the strut attachment [-].
+    Default 0.5 is a placeholder chosen so that, at the default strut-braced geometry, the strut and jury share of the wing group weight is near the SUGAR Phase IV value of about 30 %.
+    """
+    chord_to_wing_chord::Float64 = 0.5
     """Strut box width to chord ratio"""
     box_width_to_chord::Float64 = 0.5
     """Strut box web height to box height ratio"""
     web_to_box_height::Float64 = 0.75
     """Euler effective-length factor of the strut end fixity"""
     end_fixity_K::Float64 = 1.0
-    """
-    Knock-down on the minor-axis second moment of area of the strut section, ``I = \\eta\\,A d^2/4`` [-]
-    (1.0 = ideal two-flange section). Default 0.92: centre (0.925, rounded down, the conservative side) of the
-    closed composite box estimates I/(A d^2/4) ≈ 0.88-0.97 derived from SUGAR Phase II and Phase IV (see
-    SUGAR_STRUT_FINDINGS.md). A box value is an upper bound for a laced truss member (lacing shear flexibility
-    lowers it); to be refined by literature review.
-    """
-    truss_inertia_efficiency::Float64 = 0.92 # Still requires human review of the claimed value
+    """Minimum strut cap thickness [m]. Default 1.5e-3 is a placeholder, the same as the braced wing minimum cap gauge"""
+    min_cap_thickness::Float64 = 1.5e-3
+    """Minimum strut web thickness [m]. Default 1.0e-3 is a placeholder, the same as the braced wing minimum web gauge"""
+    min_web_thickness::Float64 = 1.0e-3
     """Strut local velocity ratio"""
     local_velocity_ratio::Float64 = 0
     """Model for the force that the strut carries"""
@@ -46,9 +47,9 @@ $TYPEDFIELDS
     # Computed geometry
     """Strut Length [m] """
     length::Float64 = 0
-    """Strut chord [m]"""
+    """Strut chord [m]: `chord_to_wing_chord` times the wing chord at the strut attachment, set by [`wing_weights!`](@ref)"""
     chord::Float64 = 0
-    """Strut cross-sectional area [m^2]"""
+    """Strut material area of caps and webs, without the added weight fraction [m^2]"""
     area::Float64 = 0
     """Cosine of strut sweep angle"""
     cos_lambda::Float64 = 0 
@@ -67,9 +68,13 @@ $TYPEDFIELDS
     Used for the fuselage reinforcement at the strut attachment ([`fusew!`](@ref)).
     """
     reaction_vertical::Float64 = 0
+    """Shear load of the strut webs [N]: the jury strut load plus the shear of the own weight of the strut as a transverse load, set by [`wing_weights!`](@ref)"""
+    shear_load::Float64 = 0
+    """Midspan bending moment of the own weight of the strut as a transverse load [N m], carried by the caps, set by [`wing_weights!`](@ref)"""
+    bending_moment::Float64 = 0
     """Strut Euler buckling load P_cr [N]"""
     buckling_load::Float64 = 0
-    """Strut minor-axis bending stiffness [N m^2]"""
+    """Strut minor-axis bending stiffness of the sized box [N m^2]"""
     EI_min::Float64 = 0
     """Governing strut sizing criterion: `:tension`, `:buckling` or `:gauge`"""
     sizing_criterion::Symbol = :none
@@ -85,7 +90,7 @@ $TYPEDFIELDS
     weight::Float64 = 0
     """
     Added weight fraction of the strut [-]: fairings, leading and trailing edge, splitter and fittings, as a fraction of the bare strut box weight.
-    The strut weight is `2 ρ g A l (1 + weight_frac_added)` for both wings. Placeholder value, derived from Boeing SUGAR Phase IV (NASA CR, NTRS 20220016017, Tables 12/16).
+    The strut weight is `2 g l (ρ_caps A_caps + ρ_webs A_webs) (1 + weight_frac_added)` for both wings. Placeholder value, derived from Boeing SUGAR Phase IV (NASA CR, NTRS 20220016017, Tables 12/16).
     """
     weight_frac_added::Float64 = 0.60
     """Aircraft pitching moment contribution from the weight distribution of the strut [N m]"""
@@ -99,20 +104,31 @@ Vertical jury strut of a truss-braced wing, connecting the wing to the main stru
 It holds the main strut laterally (a rigid lateral support), so it shortens the buckling length of the main strut,
 but it does not change the loads in the wing or in the main strut.
 
-Only `eta_strut` (and the material and added weight fraction) are inputs; the other fields are computed
+Only `eta_strut` (and the materials, chord ratio, minimum gauges and added weight fraction) are inputs; the other fields are computed
 by [`wing_weights!`](@ref).
 
 $TYPEDFIELDS
 """
 @kwdef mutable struct JuryStrut
-    """Jury strut Material """
-    material::StructuralAlloy = StructuralAlloy("TASOPT-Al")
+    """Jury strut box caps (top and bottom): material and, once sized, thickness and weight"""
+    caps::StructuralMember = StructuralMember(material = StructuralAlloy("TASOPT-Al"))
+    """Jury strut box webs: material and, once sized, thickness and weight"""
+    webs::StructuralMember = StructuralMember(material = StructuralAlloy("TASOPT-Al"))
     # Input
     """
     Position of the jury strut along the main strut, as a fraction of the strut length measured from the fuselage end [-].
     Default 0.5 is a placeholder (jury at the middle of the strut). This is a fraction of the strut length, not of the semispan.
     """
     eta_strut::Float64 = 0.5
+    """
+    Jury strut chord as a fraction of the main strut chord [-].
+    Default 0.5 is a placeholder, not derived from data.
+    """
+    chord_to_strut_chord::Float64 = 0.5
+    """Minimum jury strut cap thickness [m]. Default 1.5e-3 is a placeholder, the same as the braced wing minimum cap gauge"""
+    min_cap_thickness::Float64 = 1.5e-3
+    """Minimum jury strut web thickness [m]. Default 1.0e-3 is a placeholder, the same as the braced wing minimum web gauge"""
+    min_web_thickness::Float64 = 1.0e-3
 
     # Computed geometry
     """
@@ -122,7 +138,9 @@ $TYPEDFIELDS
     eta_wing::Float64 = 0
     """Jury strut length [m]: `strut.z (1 - eta_strut)`"""
     length::Float64 = 0
-    """Jury strut cross-sectional area [m^2]"""
+    """Jury strut chord [m]"""
+    chord::Float64 = 0
+    """Jury strut material area of caps and webs, without the added weight fraction [m^2]"""
     area::Float64 = 0
 
     # Loads
@@ -136,7 +154,7 @@ $TYPEDFIELDS
     weight::Float64 = 0
     """
     Added weight fraction of the jury strut [-] for fairings and fittings, as a fraction of the bare jury weight.
-    The jury weight is `2 ρ g A l (1 + weight_frac_added)` for both wings. Placeholder value, not derived from data. Assumed to be the same as for the strut
+    The jury weight is `2 g l (ρ_caps A_caps + ρ_webs A_webs) (1 + weight_frac_added)` for both wings. Placeholder value, not derived from data. Assumed to be the same as for the strut
     """
     weight_frac_added::Float64 = 0.60
     """Aircraft pitching moment contribution from the weight distribution of the jury strut [N m], computed by `size_jury!`"""
