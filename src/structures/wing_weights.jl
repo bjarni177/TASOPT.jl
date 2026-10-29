@@ -255,113 +255,6 @@ function strut_force_compatibility(M0, EI, L, f_strut; npts = 21)
 end # strut_force_compatibility
 
 """
-    strut_inertia_coefficient(strut)
-
-Returns the coefficient ``k`` of the minor-axis second moment of area of the strut section, ``I_{min} = k A^2``.
-
-The section is idealised as two chord members of total area ``A`` and width ``c``, thickness ``t_{oh} t_{oc} c``,
-separated by the depth ``t_{oc} c``, so that ``A = 2 c^2 t_{oh} t_{oc}`` (the relation used to set the strut chord in
-the sizing). With ideal rigid lacing between the members, ``I = A d^2/4`` with ``d = t_{oc} c``, which is reduced by the
-efficiency ``\\eta`` (`strut.truss_inertia_efficiency`) for a real truss member:
-```math
-I_{min} = \\eta\\,\\frac{A\\,(t_{oc} c)^2}{4} = \\eta\\,\\frac{t_{oc}}{8\\,t_{oh}}\\,A^2
-```
-with the strut thickness-to-chord ratio ``t_{oc}`` (`strut.thickness_to_chord`) and the member thickness-to-depth
-ratio ``t_{oh}`` (`strut.wall_thickness_to_depth`).
-
-!!! details "🔃 Inputs and Outputs"
-    **Inputs:**
-    - `strut::TASOPT.structures.Strut`: Strut structure.
-
-    **Outputs:**
-    - `k::Float64`: Coefficient of the second moment of area, ``I_{min}/A^2`` [-].
-"""
-function strut_inertia_coefficient(strut)
-    # TODO: true box for truss braced wing needs to be implemented.
-    # `box_width_to_chord` and `web_to_box_height` are not used.
-    # `truss_inertia_efficiency`: default 0.92, SUGAR box-section estimate (upper bound for a laced truss).
-    # see the docstring of the `Strut` field.
-    # TODO: Review sugar phase II and verify the 0.88-0.94 value.
-    # Sources: SUGAR Phase IV (NASA CR 20220016017) and Phase II (NASA CR-2015-218704 Vol. I): closed composite box,
-    # box-section efficiency I/(A d^2/4) ~ 0.88-0.97 (not a lacing knock-down).
-    return strut.truss_inertia_efficiency * strut.thickness_to_chord / (8.0 * strut.wall_thickness_to_depth)
-end # strut_inertia_coefficient
-
-"""
-    strut_bending_stiffness(strut, area)
-
-Returns the minor-axis bending stiffness ``EI_{min} = E\\,k\\,A^2`` of the strut section of area `area`, with the
-strut modulus ``E`` (`strut.material.E`) and the coefficient ``k`` of [`strut_inertia_coefficient`](@ref).
-
-!!! details "🔃 Inputs and Outputs"
-    **Inputs:**
-    - `strut::TASOPT.structures.Strut`: Strut structure.
-    - `area::Float64`: Cross-sectional area of the strut [m²].
-
-    **Outputs:**
-    - `EI_min::Float64`: Minor-axis bending stiffness of the strut [N m²].
-"""
-function strut_bending_stiffness(strut, area)
-    return strut.material.E * strut_inertia_coefficient(strut) * area^2
-end # strut_bending_stiffness
-
-"""
-    strut_buckling_area(strut, P_compression, length)
-
-Returns the smallest strut area for which the Euler buckling load
-```math
-P_{cr} = \\frac{\\pi^2 E I_{min}}{(K l)^2}, \\qquad I_{min} = k A^2
-```
-carries the ultimate compression, ``P_{cr} = f_u |P_c|`` with the ultimate factor ``f_u`` equal to the safety factor
-of the strut material (`strut.material.safety_factor`), the effective-length factor ``K`` (`strut.end_fixity_K`) and the
-strut length ``l``. Solving for the area gives
-```math
-A = \\sqrt{\\frac{f_u\\,|P_c|\\,(K l)^2}{\\pi^2 E\\,k}}
-```
-The area is zero if there is no compression. See [`strut_bending_stiffness`](@ref).
-
-!!! details "🔃 Inputs and Outputs"
-    **Inputs:**
-    - `strut::TASOPT.structures.Strut`: Strut structure.
-    - `P_compression::Float64`: Axial force of the most compressive case, zero or negative [N].
-    - `length::Float64`: Strut length [m].
-
-    **Outputs:**
-    - `A_buckling::Float64`: Strut area required against Euler buckling [m²].
-"""
-function strut_buckling_area(strut, P_compression, length)
-    P_compression == 0.0 && return 0.0
-    # The tension area uses σmax = YTS/(max_avg_stress*safety_factor). The buckling load follows from E, which
-    # carries no factor, so the safety factor (not the max_avg_stress peak-stress factor) multiplies the compression.
-    P_ultimate = strut.material.safety_factor * abs(P_compression)
-    return euler_buckling_area(P_ultimate, strut.material.E, strut_inertia_coefficient(strut), strut.end_fixity_K, length)
-end # strut_buckling_area
-
-"""
-    euler_buckling_area(P_ultimate, E, k, K, length)
-
-Returns the smallest area ``A`` of a member of second moment of area ``I_{min} = k A^2`` for which the Euler buckling load
-``P_{cr} = \\pi^2 E I_{min} / (K l)^2`` equals the ultimate compression `P_ultimate`,
-```math
-A = \\sqrt{\\frac{P_{ult}\\,(K l)^2}{\\pi^2 E\\,k}}
-```
-
-!!! details "🔃 Inputs and Outputs"
-    **Inputs:**
-    - `P_ultimate::Float64`: Ultimate compression force, positive [N].
-    - `E::Float64`: Young's modulus [Pa].
-    - `k::Float64`: Coefficient of the second moment of area, ``I_{min}/A^2`` [-].
-    - `K::Float64`: Effective-length factor [-].
-    - `length::Float64`: Member length [m].
-
-    **Outputs:**
-    - `A::Float64`: Area required against Euler buckling [m²].
-"""
-function euler_buckling_area(P_ultimate, E, k, K, length)
-    return sqrt(P_ultimate * (K * length)^2 / (pi^2 * E * k))
-end # euler_buckling_area
-
-"""
     euler_buckling_load(EI, K, length)
 
 Returns the Euler buckling load ``P_{cr} = \\pi^2 EI / (K l)^2`` [N] of a member of bending stiffness `EI` [N m²],
@@ -370,6 +263,132 @@ effective-length factor `K` [-] and length `length` [m].
 function euler_buckling_load(EI, K, length)
     return pi^2 * EI / (K * length)^2
 end # euler_buckling_load
+
+"""
+    size_member_box(caps, webs; chord, height_to_chord, width_to_chord, web_to_box_height,
+        tension, compression, buckling_length, K, shear_load, bending_moment = 0.0, sigfac, min_cap_thickness, min_web_thickness)
+
+Sizes the caps and webs of a rectangular box member (strut or jury strut). The caps carry the whole axial force, in tension,
+in compression and against Euler buckling, and the webs carry the shear load. The caps also carry the bending moment of a
+transverse load (the own weight of the strut), for yield only. Lengths are normalised by the member chord ``c``,
+as in [`WingCrossSection`](@ref). With the box height ``h`` (`height_to_chord`), width ``w`` (`width_to_chord`) and web
+height ``h_w`` = `web_to_box_height` ``h``, the caps (top and bottom, total) and the webs (two, total) have the areas
+```math
+A_{cap} = 2\\,\\bar t_{cap}\\,w\\,c^2, \\qquad A_{web} = 2\\,\\bar t_{web}\\,h_w\\,c^2
+```
+and the bending stiffnesses about the box axes are
+```math
+EI_{xx} = c^4\\left[E_{cap}\\,\\frac{w\\left(h^3 - (h - 2\\bar t_{cap})^3\\right)}{12} + E_{web}\\,\\frac{\\bar t_{web} h_w^3}{6}\\right], \\qquad
+EI_{yy} = c^4\\left[E_{cap}\\,\\frac{\\bar t_{cap} w^3}{6} + E_{web}\\,\\frac{\\bar t_{web} h_w w^2}{2}\\right]
+```
+with ``EI_{min} = \\min(EI_{xx}, EI_{yy})``. The sweep of the member is ignored.
+
+The cap thickness ``\\bar t_{cap}`` is the largest of
+- the yield thickness ``F / (2 w c^2 \\sigma_{cap})``, from the larger ``F`` of the tension and the compression and
+  ``\\sigma_{cap}`` = `caps.material.σmax * sigfac`. With a `bending_moment` ``M > 0`` it is the larger of this thickness and
+  the thickness of [`calc_cap_thickness`](@ref) for the effective moment ``M + F h c / 2`` (the moment ``M`` plus the axial force
+  ``F`` on the lever arm of the caps, as for the wing caps in [`size_wing_section!`](@ref)) of a box of height ``h`` and width ``w``,
+- the thickness for which both ``EI_{xx}`` (flapwise bending, box height direction) and ``EI_{yy}`` (chordwise bending,
+  box width direction) reach ``f_u |P_c| (K l)^2 / \\pi^2``, and
+- the minimum gauge `min_cap_thickness / chord`.
+
+The web thickness is the larger of [`calc_web_thickness`](@ref) for the shear load and the shear stress
+`webs.material.τmax * sigfac`, and the minimum gauge `min_web_thickness / chord`.
+
+!!! details "🔃 Inputs and Outputs"
+    **Inputs:**
+    - `caps::StructuralMember`: Cap material.
+    - `webs::StructuralMember`: Web material.
+    - `chord::Float64`: Chord of the member [m].
+    - `height_to_chord::Float64`: Box height to chord ratio, the thickness-to-chord ratio [-].
+    - `width_to_chord::Float64`: Box width to chord ratio [-].
+    - `web_to_box_height::Float64`: Web height to box height ratio [-].
+    - `tension::Float64`: Axial force of the most tensile case, zero or positive [N].
+    - `compression::Float64`: Axial force of the most compressive case, zero or negative [N].
+    - `buckling_length::Float64`: Member length for Euler buckling [m].
+    - `K::Float64`: Effective-length factor [-].
+    - `shear_load::Float64`: Shear load of the webs [N].
+    - `bending_moment::Float64`: (keyword, default `0.0`) Bending moment of the transverse load carried by the caps [N m].
+    - `sigfac::Float64`: Stress factor applied to the material strengths [-].
+    - `min_cap_thickness::Float64`: Minimum cap gauge [m].
+    - `min_web_thickness::Float64`: Minimum web gauge [m].
+
+    **Outputs:**
+    - `tbcap::Float64`: Cap thickness to chord ratio [-].
+    - `tbweb::Float64`: Web thickness to chord ratio [-].
+    - `area_caps::Float64`: Material area of the caps [m²].
+    - `area_webs::Float64`: Material area of the webs [m²].
+    - `area::Float64`: Material area of the caps and webs [m²].
+    - `EI_min::Float64`: Smaller of the bending stiffnesses ``EI_{xx}`` and ``EI_{yy}`` of the final box [N m²].
+    - `buckling_load::Float64`: Euler buckling load of the box [N].
+    - `criterion::Symbol`: Requirement that sets the cap thickness, `:tension` (yield), `:buckling` or `:gauge`.
+    - `buckling_axis::Symbol`: Bending axis whose buckling requirement needs the larger cap thickness, `:xx` (flapwise),
+    `:yy` (chordwise) or `:none` without compression.
+"""
+function size_member_box(caps, webs; chord, height_to_chord, width_to_chord, web_to_box_height,
+        tension, compression, buckling_length, K, shear_load, bending_moment = 0.0, sigfac, min_cap_thickness, min_web_thickness)
+    c, h, w = chord, height_to_chord, width_to_chord
+    hw = web_to_box_height * h
+    E_cap, E_web = caps.material.E, webs.material.E
+
+    # Webs: shear, with the minimum gauge
+    tbweb = max(calc_web_thickness(webs.material.τmax * sigfac, shear_load, c, hw), min_web_thickness / c)
+
+    # Caps: yield, Euler buckling and minimum gauge
+    F = max(tension, abs(compression))
+    σ_cap = caps.material.σmax * sigfac
+    tb_yield = F / (2 * w * c^2 * σ_cap)
+    if bending_moment > 0.0
+        # the axial force acts on the lever arm h c / 2 of the caps, as for the wing caps
+        try
+            tb_yield = max(tb_yield, calc_cap_thickness(σ_cap, bending_moment + F * h * c / 2, h, w, h, c, 1.0))
+        catch err
+            err isa ErrorException || rethrow()
+            error("Strut cap sizing infeasible: the caps cannot carry the bending moment within the box height. ",
+                "Increase the chord or the thickness-to-chord ratio of the member.")
+        end
+    end
+    tb_gauge = min_cap_thickness / c
+
+    # Euler buckling: the caps must give both EI_xx (flapwise, box height direction) and EI_yy (chordwise, box width
+    # direction) at least the required stiffness; the more constraining axis sets the cap thickness
+    tb_buckling = 0.0
+    buckling_axis = :none
+    if compression < 0.0
+        EI_req = caps.material.safety_factor * abs(compression) * (K * buckling_length)^2 / pi^2
+
+        # Stiffness the caps must add to the web contribution of each axis, floored at zero if the webs alone suffice
+        EI_caps_xx = max(EI_req - E_web * c^4 * tbweb * hw^3 / 6, 0.0)
+        EI_caps_yy = max(EI_req - E_web * c^4 * tbweb * hw * w^2 / 2, 0.0)
+
+        # EI_xx cap term: E_cap c^4 w (h^3 - (h - 2 tb)^3) / 12 = EI_caps_xx
+        X = 12 * EI_caps_xx / (E_cap * c^4 * w)
+        X < h^3 || error("Strut cap sizing infeasible: EI_xx (flapwise bending, box height direction) cannot reach ",
+            "the buckling stiffness within the box height. Increase the chord or the thickness-to-chord ratio of the member.")
+        tb_xx = 0.5 * (h - cbrt(h^3 - X))
+
+        # EI_yy cap term: E_cap c^4 tb w^3 / 6 = EI_caps_yy
+        tb_yy = 6 * EI_caps_yy / (E_cap * c^4 * w^3)
+        tb_yy <= h / 2 || error("Strut cap sizing infeasible: EI_yy (chordwise bending, box width direction) cannot reach ",
+            "the buckling stiffness within the box height. Increase the chord or the width-to-chord ratio of the member.")
+
+        tb_buckling = max(tb_xx, tb_yy)
+        buckling_axis = tb_xx >= tb_yy ? :xx : :yy
+    end
+
+    tbcap = max(tb_yield, tb_buckling, tb_gauge)
+    criterion = tbcap == tb_yield ? :tension : (tbcap == tb_buckling ? :buckling : :gauge)
+
+    EI_xx = E_cap * c^4 * w * (h^3 - (h - 2 * tbcap)^3) / 12 + E_web * c^4 * tbweb * hw^3 / 6
+    EI_yy = E_cap * c^4 * tbcap * w^3 / 6 + E_web * c^4 * tbweb * hw * w^2 / 2
+    EI_min = min(EI_xx, EI_yy)
+
+    area_caps = 2 * tbcap * w * c^2
+    area_webs = 2 * tbweb * hw * c^2
+    return (tbcap = tbcap, tbweb = tbweb, area_caps = area_caps, area_webs = area_webs, area = area_caps + area_webs,
+        EI_min = EI_min, buckling_load = euler_buckling_load(EI_min, K, buckling_length), criterion = criterion,
+        buckling_axis = buckling_axis)
+end # size_member_box
 
 """
     strut_buckling_length(strut_length, eta_strut)
@@ -403,10 +422,10 @@ Sizes the vertical jury strut `wing.jury` of a truss-braced wing and sets its ge
 weight and weight moment. The jury is a lateral support only, so its load is the fraction `jury_load_fraction` of the compression
 of the main strut (`wing.strut.axial_force_compression`), taken as compression. Its length is ``z (1 - \\eta_{strut})`` with the
 strut height ``z`` (`wing.strut.z`) and its wing attachment is ``\\eta_o + \\eta_{strut} (\\eta_s - \\eta_o)``.
-The area is the larger of the yield area, from the jury material `σmax`, and the Euler buckling area for a pinned member
-(``K = 1``) of the jury material and the section idealisation of the main strut ([`strut_inertia_coefficient`](@ref)),
-with the ultimate factor equal to the jury material safety factor.
-The weight is the member weight of n_wings times ``1 + f_{added}`` (`jury.weight_frac_added`), with the bare area. Its moment `jury.dxW` is the weight times the
+The jury is a pinned (``K = 1``) box of caps and webs, sized by [`size_member_box`](@ref) for this compression over its length,
+without tension or shear (the webs are at their minimum gauge). Its chord is `jury.chord_to_strut_chord` times the strut chord, and the
+thickness-to-chord, width and web height ratios are those of the main strut. `jury.area` is the material area of caps and webs.
+The weight is the member weight of caps and webs of n_wings times ``1 + f_{added}`` (`jury.weight_frac_added`), with the bare areas. Its moment `jury.dxW` is the weight times the
 streamwise offset of the wing attachment station `jury.eta_wing` from the wing box root, ``0.5\\,b\\,(\\eta_{wing} - \\eta_o) \\tan\\Lambda``,
 with the wing span ``b`` and sweep ``\\Lambda``.
 
@@ -426,13 +445,17 @@ function size_jury!(wing, etao, etas, sigfac, sinL, cosL; n_wings = 2.0)
     jury.length = strut.z * (1.0 - jury.eta_strut) # only correct if the wing and truss/strut have the same sweep and are in the same plane. 3D effects on length missing
     jury.axial_force = -jury_load_fraction * abs(strut.axial_force_compression)
 
-    k = strut_inertia_coefficient(strut)
-    A_yield = abs(jury.axial_force) / (jury.material.σmax * sigfac)
-    A_buckling = euler_buckling_area(jury.material.safety_factor * abs(jury.axial_force), jury.material.E, k, 1.0, jury.length)
-    jury.area = max(A_yield, A_buckling)
-    jury.buckling_load = euler_buckling_load(jury.material.E * k * jury.area^2, 1.0, jury.length)
+    jury.chord = jury.chord_to_strut_chord * strut.chord
+    box = size_member_box(jury.caps, jury.webs;
+        chord = jury.chord, height_to_chord = strut.thickness_to_chord, width_to_chord = strut.box_width_to_chord,
+        web_to_box_height = strut.web_to_box_height, tension = 0.0, compression = jury.axial_force,
+        buckling_length = jury.length, K = 1.0, shear_load = 0.0, sigfac = sigfac,
+        min_cap_thickness = jury.min_cap_thickness, min_web_thickness = jury.min_web_thickness)
+    jury.area = box.area
+    jury.buckling_load = box.buckling_load
 
-    jury.weight = n_wings * jury.material.ρ * gee * jury.area * jury.length * (1.0 + jury.weight_frac_added)
+    jury.weight = n_wings * gee * jury.length * (jury.caps.material.ρ * box.area_caps + jury.webs.material.ρ * box.area_webs) *
+                  (1.0 + jury.weight_frac_added)
     jury.dxW = jury.weight * 0.5 * wing.layout.span * (jury.eta_wing - etao) * sinL / cosL
     return nothing
 end # size_jury!
@@ -494,7 +517,7 @@ force model `wing.strut.opt_strut_force`:
   ```math
   f_s = \\frac{l_s}{E_s\\,A_s\\,\\sin^2\\theta}, \\qquad \\sin\\theta = \\frac{z}{l_s}
   ```
-  with the strut modulus ``E_s`` (`wing.strut.material.E`), the strut area ``A_s`` (`wing.strut.area`) and the
+  with the strut modulus ``E_s`` (`wing.strut.caps.material.E`), the strut area ``A_s`` (`wing.strut.area`) and the
   strut length ``l_s`` and height ``z`` (`wing.strut.z`) in the plane of the strut.
   The stiffness and the strut area are those of the previous sizing iteration.
 - `Prescribed`: the rule `R = (po b / 12) (ηs - ηo) (1 + 2 γs) + S_break`.
@@ -523,7 +546,7 @@ function strut_reaction(wing, po, gammas, M0, L, ls)
 
     if wing.strut.opt_strut_force == StrutForceModel.Compatibility && stiffness_known
         EI(x) = EI_root + (EI_attach - EI_root) * x / L
-        f_strut = ls / (wing.strut.material.E * A_strut * (wing.strut.z / ls)^2)
+        f_strut = ls / (wing.strut.caps.material.E * A_strut * (wing.strut.z / ls)^2)
         return strut_force_compatibility(M0, EI, L, f_strut)
     else
         return (po * wing.layout.span / 12.0) * (wing.layout.ηs - wing.layout.ηo) * (1.0 + 2.0 * gammas) +
@@ -905,8 +928,10 @@ Also returns the material gauges, torsional and bending stiffness. Formerly, `ge
         and `P_axial` from [`evaluate_wing_sizing_cases!`](@ref), and is used only if `wing.strut.opt_strut_force` is `Compatibility`:
         the inboard section is then sized for the envelope shear, moment and axial force, and the strut for the envelope
         tension `T_strut` and, through `T_strut_compression` (recorded in `wing.strut.axial_force_compression`), for Euler buckling:
-        the strut area is the larger of the yield area, from the larger of the tension and the compression, and [`strut_buckling_area`](@ref), and `wing.strut.EI_min`,
-        `wing.strut.buckling_load` and `wing.strut.sizing_criterion` are set. With the `Prescribed` strut force model, or if no envelope is given, a wing with `has_strut`
+        the strut is a box of caps and webs sized by [`size_member_box`](@ref), with the chord `wing.strut.chord_to_wing_chord` times the wing
+        chord at the strut attachment (stored in `wing.strut.chord`). The load factor is the largest of the active sizing load cases, which is 
+        conservative, or `Nload` without the envelope. The strut weight is the weight of both wings of the caps and webs times 
+        `1 + wing.strut.weight_frac_added`. With the `Prescribed` strut force model, or if no envelope is given, a wing with `has_strut`
         is sized for the outboard loads of the strut-attach station and the prescribed strut force, and the envelope is ignored.
         If `nothing` (default), the computed loads are used.
 
@@ -1003,20 +1028,38 @@ function wing_weights!(wing, po, gammat, gammas,
         # compression, the largest magnitude over the cases) times z/ls
         wing.strut.reaction_vertical = n_wings*max(Tstrut, abs(Tstrut_compression))*wing.strut.z/ls
         wing.strut.length = lsp
-        # The strut is sized by the larger of the yield area, from the larger of the tension and the
-        # compression, and the Euler buckling area
-        A_yield = max(Tstrutp, abs(wing.strut.axial_force_compression))/(wing.strut.material.σmax * sigfac)
-        # A vertical jury strut shortens the buckling length of the strut
-        l_buckling = strut_buckling_length(lsp, has_jury ? wing.jury.eta_strut : nothing)
-        A_buckling = strut_buckling_area(wing.strut, wing.strut.axial_force_compression, l_buckling)
-        wing.strut.area = max(A_yield, A_buckling)
-        wing.strut.EI_min = strut_bending_stiffness(wing.strut, wing.strut.area)
-        wing.strut.buckling_load = euler_buckling_load(wing.strut.EI_min, wing.strut.end_fixity_K, l_buckling)
-        # `:tension` also covers the yield in compression, which sets the area in the same way
-        wing.strut.sizing_criterion = A_buckling > A_yield ? :buckling : :tension
+        # The strut is a box of caps and webs of the chord `chord_to_wing_chord` times the wing chord at the strut attachment.
+        # A vertical jury strut shortens the buckling length of the strut and loads the webs in shear (previous iteration).
+        strut = wing.strut
+        strut.chord = strut.chord_to_wing_chord * cs
+        buckling_length = strut_buckling_length(lsp, has_jury ? wing.jury.eta_strut : nothing)
+
+        # The load factor is the largest of the active sizing cases, or Nload without the load case envelope.
+        n_max = Nload
+        if has_braced_envelope
+            sl = wing.sizing_loads
+            n_max = maximum(abs(getfield(sl, name).n_computed) for name in fieldnames(WingSizingLoads)
+                            if getfield(sl, name) isa WingLoadCase && getfield(sl, name).active; init = 0.0)
+        end
+        q_perp = abs(n_max) * (strut.weight / n_wings) / lsp * sqrt(lsp^2 - strut.z^2) / lsp
+        V_own_weight = q_perp * buckling_length / 2
+        strut.bending_moment = q_perp * buckling_length^2 / 8
+        strut.shear_load = (has_jury ? abs(wing.jury.axial_force) : 0.0) + V_own_weight
+
+        box = size_member_box(strut.caps, strut.webs;
+            chord = strut.chord, height_to_chord = strut.thickness_to_chord, width_to_chord = strut.box_width_to_chord,
+            web_to_box_height = strut.web_to_box_height, tension = Tstrutp, compression = strut.axial_force_compression,
+            buckling_length = buckling_length, K = strut.end_fixity_K,
+            shear_load = strut.shear_load, bending_moment = strut.bending_moment, sigfac = sigfac,
+            min_cap_thickness = strut.min_cap_thickness, min_web_thickness = strut.min_web_thickness)
+        strut.area = box.area
+        strut.EI_min = box.EI_min
+        strut.buckling_load = box.buckling_load
+        strut.sizing_criterion = box.criterion
         # The strut weight is the bare member weight of both wings times the added weight fraction (fairings and fittings);
         # the area stays bare, and the weight moment uses the total weight
-        wing.strut.weight   = n_wings*wing.strut.material.ρ*gee*wing.strut.area*lsp*(1.0 + wing.strut.weight_frac_added)
+        strut.weight = n_wings*gee*lsp*(strut.caps.material.ρ*box.area_caps + strut.webs.material.ρ*box.area_webs) *
+                       (1.0 + strut.weight_frac_added)
         wing.strut.dxW = wing.strut.weight * 0.25*wing.layout.span*(etas-etao) * sinL/cosL
         has_jury && size_jury!(wing, etao, etas, sigfac, sinL, cosL; n_wings = n_wings) 
     end
