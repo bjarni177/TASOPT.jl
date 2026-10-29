@@ -40,10 +40,13 @@ function induced_drag!(para, ac, trefftz_config::TrefftzPlaneConfig)
 
     specifies_CL = true
 
-    gammas = zeros(Float64, 2)
-    gammat = zeros(Float64, 2)
-    po = zeros(Float64, 2)
-    CLsurfsp = zeros(Float64, 2)
+    #---- number of surfaces (wing, horizontal tail and, for a braced wing, strut)
+    nsurf = n_surfaces(trefftz_config)
+
+    gammas = zeros(Float64, nsurf)
+    gammat = zeros(Float64, nsurf)
+    po = zeros(Float64, nsurf)
+    CLsurfsp = zeros(Float64, nsurf)
 
     #---- wing wake parameters
     fLo = wing.fuse_lift_carryover
@@ -64,15 +67,17 @@ function induced_drag!(para, ac, trefftz_config::TrefftzPlaneConfig)
     po[2] = 1.0
     CLsurfsp[2] = CLhtail
 
-
-    #---- number of surfaces  (wing, horizontal tail)
-    nsurf = 2 # TODO SHould make this parametric too eventually
+    #---- strut: carries no lift, so po, gammat, gammas (circulation shape) and CLsurfsp stay zero
 
     # Ensure wake_system has current geometry (rebuilds if geometry changed)
     ensure_trefftz_current!(ac, po, gammat, gammas, trefftz_config)
 
     ifrst = [i_first_wing(trefftz_config), i_first_tail(trefftz_config)]
     ilast = [i_last_wing(trefftz_config), i_last_tail(trefftz_config)]
+    if nsurf == 3
+        push!(ifrst, i_first_strut(trefftz_config))
+        push!(ilast, i_last_strut(trefftz_config))
+    end
 
     calculate_wake_circulation!(gw, TREFFTZ_GEOM.gc, ifrst, ilast, nsurf) #TODO: next cut avoid these module consts. They're ugly.
 
@@ -93,15 +98,19 @@ end # induced_drag!
 """
     ensure_trefftz_current!(ac, po, gammat, gammas, trefftz_config)
 
-Checks if the Trefftz plane geometry is up-to-date with the current wing and tail geometry.
-If not, rebuilds the geometry.
+Checks if the Trefftz plane geometry is up-to-date with the current wing and tail geometry
+(and, if the configuration has a strut surface, the strut geometry). If not, rebuilds the geometry.
 """
 function ensure_trefftz_current!(ac, po, gammat, gammas, trefftz_config)
     wing = ac.wing
     htail = ac.htail
 
-    current_hash = hash((wing.layout.span, wing.layout.root_span, wing.layout.ηs,
-        htail.layout.span, htail.layout.root_span, htail.layout.ηs, gammat..., gammas...))
+    geometry = (wing.layout.span, wing.layout.root_span, wing.layout.ηs,
+        htail.layout.span, htail.layout.root_span, htail.layout.ηs, gammat..., gammas...)
+    if n_surfaces(trefftz_config) == 3
+        geometry = (geometry..., wing.strut.y_root, wing.strut.z)
+    end
+    current_hash = hash(geometry)
 
     # Only rebuild if geometry changed
     if current_hash != TREFFTZ_GEOMETRY_HASH[]
@@ -204,8 +213,8 @@ Scale circulation distribution to match specified specified lift coefficient for
         # Convert integrated circulation to lift coefficient
         cl_test = cl_test * 2.0 * bref / (0.5 * Sref)
 
-        # Compute scaling factor
-        gfac = CLsurfsp[isurf] / cl_test
+        # Compute scaling factor. A surface with no circulation (the strut) stays at zero.
+        gfac = cl_test == 0.0 ? 0.0 : CLsurfsp[isurf] / cl_test
 
         # Scale both bound and wake circulations
         @inbounds for i = ifrst[isurf]:ilast[isurf]
@@ -449,45 +458,95 @@ This is an incremental refactoring step - extracted from _trefftz_analysis for c
 end
 
 """
+    generate_strut_points!(i_start::Int, geom::TrefftzGeometry, wing, panels::SurfaceDiscretization) -> i_end::Int
+
+Generate field points and control points for the strut in the Trefftz plane. Returns the final index
+after point generation.
+
+Placeholder geometry: the points are evenly spaced along a straight line at constant height `wing.strut.z`,
+from the strut root `wing.strut.y_root` to the strut attachment at the wing break (`ηs b/2`). The strut carries
+no lift, so its circulation `gc` is zero and the wake is not contracted (`yp = y`).
+"""
+function generate_strut_points!(
+    i_start::Int,
+    geom::TrefftzGeometry,
+    wing,
+    panels::SurfaceDiscretization
+)
+    y_root = wing.strut.y_root
+    y_attach = 0.5 * wing.layout.break_span
+    z = wing.strut.z
+    n_panels = n_total(panels)
+
+    i = i_start
+    geom.y[i] = y_root
+    geom.yp[i] = y_root
+    geom.z[i] = z
+    geom.zp[i] = z
+
+    @inbounds for k = 1:n_panels
+        i = i + 1
+        geom.y[i] = y_root + (y_attach - y_root) * k / n_panels
+        geom.yp[i] = geom.y[i]
+        geom.z[i] = z
+        geom.zp[i] = z
+
+        geom.yc[i-1] = 0.5 * (geom.y[i-1] + geom.y[i])
+        geom.ycp[i-1] = geom.yc[i-1]
+        geom.zc[i-1] = z
+        geom.zcp[i-1] = z
+        geom.gc[i-1] = 0.0
+    end
+
+    return i
+end
+
+"""
     _build_trefftz_geometry!(wing, htail, po, gammat, gammas,
     trefftz_config::TrefftzPlaneConfig)
 
-Construct the Trefftz plane geometry for the given wing and horizontal tail.
+Construct the Trefftz plane geometry for the given wing and horizontal tail and, if `trefftz_config`
+has strut panels, the strut of the wing (see [`generate_strut_points!`](@ref)).
 """
 function _build_trefftz_geometry!(wing, htail, po, gammat, gammas,
     trefftz_config::TrefftzPlaneConfig)
 
     i::Int64 = 0
 
-    nsurf = 2
+    nsurf = n_surfaces(trefftz_config)
     @inbounds for isurf = 1:nsurf
-        # Select the right surface and panel config
-        surface = isurf == 1 ? wing : htail
-        panels = isurf == 1 ? trefftz_config.wing_panels : trefftz_config.tail_panels
-        root_contraction = isurf == 1 ? trefftz_config.wing_root_contraction : trefftz_config.tail_root_contraction
-
-        # Handle T-tail special case (root_span = 0)
-        if isurf == 2 && surface.layout.root_span == 0.0
-            panels = SurfaceDiscretization(panels.n_outer_panels, panels.n_inner_panels, 0)
-        end
-
         i = i + 1
-        # Generate points for this surface
-        i = generate_trefftz_points!(
-            i, TREFFTZ_GEOM,
-            surface,
-            po[isurf], gammat[isurf], gammas[isurf],
-            panels,
-            trefftz_config,
-            root_contraction
-        )
+        if isurf == 3
+            # Generate points for the strut
+            i = generate_strut_points!(i, TREFFTZ_GEOM, wing, trefftz_config.strut_panels)
+        else
+            # Select the right surface and panel config
+            surface = isurf == 1 ? wing : htail
+            panels = isurf == 1 ? trefftz_config.wing_panels : trefftz_config.tail_panels
+            root_contraction = isurf == 1 ? trefftz_config.wing_root_contraction : trefftz_config.tail_root_contraction
+
+            # Handle T-tail special case (root_span = 0)
+            if isurf == 2 && surface.layout.root_span == 0.0
+                panels = SurfaceDiscretization(panels.n_outer_panels, panels.n_inner_panels, 0)
+            end
+
+            # Generate points for this surface
+            i = generate_trefftz_points!(
+                i, TREFFTZ_GEOM,
+                surface,
+                po[isurf], gammat[isurf], gammas[isurf],
+                panels,
+                trefftz_config,
+                root_contraction
+            )
+        end
 
         #---- dummy control point between surfaces
         TREFFTZ_GEOM.yc[i] = 0.0
         TREFFTZ_GEOM.zc[i] = 0.0
         TREFFTZ_GEOM.gc[i] = 0.0
     end # nsurf loop
-    # ilast = i_last_tail(trefftz_config) # could use this instead of accumulating i...
+    # ilast = i_last_strut or i_last_tail (trefftz_config) # could use this instead of accumulating i...
     WS = WakeSystem(
         TREFFTZ_GEOM.yp[1:i],
         TREFFTZ_GEOM.zp[1:i],
