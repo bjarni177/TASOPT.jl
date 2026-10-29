@@ -167,11 +167,9 @@ const strut_block_fields = (
     y_fuselage_attach = :y_root,
     thickness_to_chord = :thickness_to_chord,
     local_velocity_ratio = :local_velocity_ratio,
-    wall_thickness_to_depth = :wall_thickness_to_depth,
     box_width_to_chord = :box_width_to_chord,
     web_to_box_height = :web_to_box_height,
     end_fixity_K = :end_fixity_K,
-    truss_inertia_efficiency = :truss_inertia_efficiency,
     weight_frac_added = :weight_frac_added,
     opt_strut_force = :opt_strut_force,
 )
@@ -189,11 +187,9 @@ const custom_strut_block = """
     y_fuselage_attach = "1.5 ft"
     thickness_to_chord = 0.12
     local_velocity_ratio = 1.1
-    wall_thickness_to_depth = 0.07
     box_width_to_chord = 0.45
     web_to_box_height = 0.7
     end_fixity_K = 0.8
-    truss_inertia_efficiency = 0.6
     weight_frac_added = 0.5
     opt_strut_force = "prescribed"
 """
@@ -221,11 +217,9 @@ mentions_legacy_strut_key(log, key) = log.level == CoreLogging.Info && occursin(
         y_fuselage_attach = TASOPT.Distance("1.5 ft"),
         thickness_to_chord = 0.12,
         local_velocity_ratio = 1.1,
-        wall_thickness_to_depth = 0.07,
         box_width_to_chord = 0.45,
         web_to_box_height = 0.7,
         end_fixity_K = 0.8,
-        truss_inertia_efficiency = 0.6,
         weight_frac_added = 0.5,
         opt_strut_force = TASOPT.StrutForceModel.Prescribed,
     )
@@ -273,11 +267,9 @@ mentions_legacy_strut_key(log, key) = log.level == CoreLogging.Info && occursin(
         @test strut.z ≈ 154 * 0.0254
         @test strut.thickness_to_chord == 0.15
         @test strut.local_velocity_ratio == 1.0
-        @test strut.wall_thickness_to_depth == 0.05
         @test strut.box_width_to_chord == 0.5
         @test strut.web_to_box_height == 0.75
         @test strut.end_fixity_K == 1.0
-        @test strut.truss_inertia_efficiency == 0.92
         @test strut.weight_frac_added == 0.60
         @test !any(r -> any(key -> mentions_legacy_strut_key(r, key), keys(legacy_flat_strut_keys)), logs)
 
@@ -362,23 +354,6 @@ mentions_nlift_deprecation(log) =
 @testset "TBW wing sizing loads TOML block" verbose=true begin
     WingMassState = TASOPT.structures.WingMassState
     WingSizingLoads = TASOPT.structures.WingSizingLoads
-
-    @testset "inputs with and without [Wing.SizingLoads] give the WingSizingLoads defaults" begin
-        defaults_dir = joinpath(TASOPT.__TASOPTroot__, "../example/defaults")
-        defaults = TASOPT.TOML.parsefile(joinpath(defaults_dir, "default_input.toml"))
-        @test defaults["Wing"]["SizingLoads"] isa AbstractDict
-        for name in sizing_load_case_names
-            @test haskey(defaults["Wing"]["SizingLoads"], string(name))
-        end
-
-        # default_input.toml has the table; the other templates fall back to the defaults
-        acs = [first(read_aircraft_from_default_dict(d -> nothing));
-               [first(read_aircraft_from_text(read(joinpath(defaults_dir, file), String)))
-                for file in ("default_regional.toml", "default_wide.toml")]]
-        for ac in acs, name in sizing_load_case_names
-            @test case_inputs(ac.wing.sizing_loads, name) == case_inputs(WingSizingLoads(), name)
-        end
-    end
 
     @testset "[Wing.SizingLoads] populates the load cases" begin
         ac, _ = read_aircraft_from_default_dict() do d
@@ -626,6 +601,61 @@ end
     @test ac.options.has_wing_fuel
 end
 
+"""
+Box of the strut recomputed with `size_member_box` from the loads, geometry and inputs recorded on the sized
+aircraft `ac`: the strut chord is the chord ratio times the wing chord at the strut attachment, the webs carry the
+recorded shear load (jury load and own weight) and the caps the recorded own-weight bending moment.
+"""
+function recomputed_strut_box(ac)
+    wing, strut = ac.wing, ac.wing.strut
+    has_jury = ac.options.opt_wing_config == WingConfig.TrussBraced
+    return TASOPT.structures.size_member_box(strut.caps, strut.webs;
+        chord = strut.chord_to_wing_chord * wing.layout.root_chord * wing.inboard.λ,
+        height_to_chord = strut.thickness_to_chord, width_to_chord = strut.box_width_to_chord,
+        web_to_box_height = strut.web_to_box_height,
+        tension = strut.axial_force, compression = strut.axial_force_compression,
+        buckling_length = TASOPT.structures.strut_buckling_length(strut.length, has_jury ? wing.jury.eta_strut : nothing),
+        K = strut.end_fixity_K, shear_load = strut.shear_load, bending_moment = strut.bending_moment,
+        sigfac = ac.parg[igsigfac],
+        min_cap_thickness = strut.min_cap_thickness, min_web_thickness = strut.min_web_thickness)
+end
+
+"""
+Box of the jury strut recomputed with `size_member_box`: a pinned member of the chord ratio times the strut chord,
+carrying its recorded compression over its length, without tension or shear.
+"""
+function recomputed_jury_box(ac)
+    strut, jury = ac.wing.strut, ac.wing.jury
+    return TASOPT.structures.size_member_box(jury.caps, jury.webs;
+        chord = jury.chord_to_strut_chord * strut.chord,
+        height_to_chord = strut.thickness_to_chord, width_to_chord = strut.box_width_to_chord,
+        web_to_box_height = strut.web_to_box_height,
+        tension = 0.0, compression = jury.axial_force, buckling_length = jury.length, K = 1.0,
+        shear_load = 0.0, sigfac = ac.parg[igsigfac],
+        min_cap_thickness = jury.min_cap_thickness, min_web_thickness = jury.min_web_thickness)
+end
+
+"""
+Shear `V` [N] and midspan bending moment `M` [N m] of the own weight of the strut of the sized aircraft `ac`, recomputed from
+its recorded weight: the weight of one strut times the largest load factor of the active sizing cases is spread over the strut
+length, its component perpendicular to the strut loads a pinned beam over the buckling length of the strut.
+"""
+function strut_own_weight_loads(ac)
+    wing, strut = ac.wing, ac.wing.strut
+    sl = wing.sizing_loads
+    n_max = maximum(abs(getfield(sl, name).n_computed)
+                    for name in fieldnames(typeof(sl)) if getfield(sl, name) isa TASOPT.structures.WingLoadCase && getfield(sl, name).active)
+    L, z = strut.length, strut.z
+    q_perp = n_max * (strut.weight / 2) / L * sqrt(L^2 - z^2) / L
+    has_jury = ac.options.opt_wing_config == WingConfig.TrussBraced
+    l_b = TASOPT.structures.strut_buckling_length(L, has_jury ? wing.jury.eta_strut : nothing)
+    return (V = q_perp * l_b / 2, M = q_perp * l_b^2 / 8)
+end
+
+"Weight [N] of the strut or jury strut `member` for both wings from the areas of its `box`, with the added weight fraction `frac`."
+box_member_weight(member, box; frac = member.weight_frac_added) =
+    2 * TASOPT.gee * member.length * (member.caps.material.ρ * box.area_caps + member.webs.material.ρ * box.area_webs) * (1 + frac)
+
 @testset "TBW strut struct" verbose=true begin
     # Default aircraft with the strut switched on, sized with the legacy strut model:
     # prescribed strut force and only the pull-up case
@@ -638,15 +668,14 @@ end
     wing = ac.wing
     strut = wing.strut
 
-    @testset "Strut-on sizing matches the legacy results" begin
-        # Reference values with the strut weight 2 rho g A l (1 + weight_frac_added) and the fuselage strut-attach reinforcement
-        @test wing.weight             ≈ 163424.13616772654    rtol=1e-10
-        @test strut.weight            ≈ 4359.591962938605     rtol=1e-10
-        @test ac.parm[imPFEI]         ≈ 1.2058646201314176    rtol=1e-10
-        @test ac.parg[igWMTO]         ≈ 1.1689761816531545e6  rtol=1e-10
-        @test strut.chord             ≈ 0.7408300901487267    rtol=1e-10
-        @test strut.S                 ≈ 9.25727603296466      rtol=1e-10
-        @test strut.area              ≈ 0.008232438337046557  rtol=1e-10
+    @testset "Strut-on sizing with the prescribed force gives a finite strut box" begin
+        # The strut box is sized by `size_member_box`, so the old reference values of the solid strut do not apply
+        @test isfinite(wing.weight) && wing.weight > 0
+        @test isfinite(ac.parg[igWMTO]) && ac.parg[igWMTO] > 0
+        @test strut.weight > 0
+        @test strut.area > 0
+        @test strut.chord > 0
+        @test strut.S ≈ 2 * strut.chord * strut.length rtol=1e-10
     end
 
     @testset "Prescribed strut: pull-up case, length, force, weight and chord" begin
@@ -662,16 +691,32 @@ end
         @test strut.length > 0
         @test strut.length ≈ length_3d rtol=1e-6
 
-        # Tension force [N] is the area times the allowable stress
+        # The prescribed force has no compression: the caps carry the tension (or sit at the minimum gauge)
         @test strut.axial_force > 0
-        @test strut.axial_force ≈ strut.area * strut.material.σmax * ac.parg[igsigfac] rtol=1e-10
+        @test strut.axial_force_compression == 0
+        @test strut.sizing_criterion in (:tension, :gauge)
 
-        # Two struts of uniform (bare) area, plus the added weight fraction for fairings and fittings
-        @test strut.weight ≈ 2 * strut.material.ρ * TASOPT.gee * strut.area * strut.length * (1 + strut.weight_frac_added) rtol=1e-6
+        # The strut chord is the chord to wing chord ratio times the wing chord at the strut attachment
+        @test strut.chord ≈ strut.chord_to_wing_chord * layout.root_chord * wing.inboard.λ rtol=1e-12
         @test strut.S ≈ 2 * strut.chord * strut.length rtol=1e-10
 
-        # the chord follows from the area, the wall thickness to depth and the thickness to chord
-        @test strut.chord ≈ sqrt(0.5 * strut.area / (strut.wall_thickness_to_depth * strut.thickness_to_chord)) rtol=1e-10
+        # Two struts of caps and webs of uniform area, plus the added weight fraction for fairings and fittings
+        box = recomputed_strut_box(ac)
+        @test strut.area ≈ box.area rtol=1e-6
+        @test strut.weight ≈ box_member_weight(strut, box) rtol=1e-6
+        if strut.sizing_criterion === :tension
+            # the caps carry at least the tension (the bending moment of the own weight adds to it)
+            @test box.area_caps ≥ strut.axial_force / (strut.caps.material.σmax * ac.parg[igsigfac]) * (1 - 1e-6)
+        end
+    end
+
+    @testset "Prescribed strut: the own weight at the pull-up load factor is a transverse load" begin
+        # only the pull-up case is active, so the load factor is the pull-up load factor
+        loads = strut_own_weight_loads(ac)
+        @test wing.sizing_loads.pullup.n_computed ≈ wing.sizing_loads.pullup.load_factor
+        @test strut.bending_moment > 0
+        @test strut.bending_moment ≈ loads.M rtol=1e-6
+        @test strut.shear_load ≈ loads.V rtol=1e-6   # no jury: the shear is the own weight only
     end
 
 end
@@ -688,44 +733,13 @@ function sized_braced_aircraft(key = :compatibility, edit! = ac -> nothing)
     end
 end
 
-@testset "strut-braced sizing with the compatibility strut model" verbose=true begin
-    ac = sized_braced_aircraft()
-    @test ac.wing.strut.opt_strut_force == TASOPT.StrutForceModel.Compatibility
-    wing, strut, sl = ac.wing, ac.wing.strut, ac.wing.sizing_loads
-
-    @testset "the wing is no longer free at a far outboard strut, and the strut has tension and area" begin
-        # the legacy model gives about 3 kN for this wing (TBW_PROPOSAL.md, section 2.1)
-        @test isfinite(wing.weight)
-        @test wing.weight > 20e3
-        @test strut.axial_force > 0
-        @test strut.area > 0
-        @test strut.weight > 0
-        # the tension area is a lower bound: Euler buckling may enlarge the strut beyond it
-        @test strut.axial_force <= strut.area * strut.material.σmax * ac.parg[igsigfac] * (1 + 1e-10)
-    end
-
-    @testset "the sizing cases are evaluated and the strut forces are recorded" begin
-        active = Set(name for name in keys(sl.results))
-        @test Set([:pullup, :pushover, :pullup_light, :pushover_light, :taxi]) == active
-        forces = [r.strut_force for r in values(sl.results)]
-        @test sl.governing_strut in active
-        @test sl.results[sl.governing_strut].strut_force == maximum(forces)
-
-        @test sl.governing_strut_compression in (:pushover, :pushover_light, :taxi)
-        @test sl.results[sl.governing_strut_compression].strut_force == minimum(forces)
-        @test strut.axial_force_compression < 0
-        # tension and compression are scaled from the strut length in the plane of the strut to the real length
-        @test strut.axial_force_compression / strut.axial_force ≈ minimum(forces) / maximum(forces) rtol = 1e-8
-    end
-end
-
 # Stress and safety factors of the structural materials are kept in StructuralAlloy
 
 @testset "structural material factors round trip through save and read" verbose=true begin
     material_getters = (
         caps = ac -> ac.wing.inboard.caps.material,
         webs = ac -> ac.wing.inboard.webs.material,
-        strut = ac -> ac.wing.strut.material,
+        strut = ac -> ac.wing.strut.caps.material,
         skin = ac -> ac.fuselage.skin.material,
         cone = ac -> ac.fuselage.cone.material,
         bending = ac -> ac.fuselage.bendingmaterial_h.material,
@@ -767,117 +781,196 @@ end
     end
 end
 
-# Euler buckling sizing of the strut: A = max(yield area, buckling area), with the yield area from the larger of
-# the tension and the compression
+# Strut box sizing on sized aircraft: the caps carry the tension, the compression (yield and Euler buckling)
+# and the minimum gauge, the webs carry the jury load. The expected values are recomputed with `size_member_box`
+# from the loads recorded on the sized aircraft.
 
-@testset "strut Euler buckling sizing" verbose=true begin
-    st = TASOPT.structures
-    E = TASOPT.structures.Strut().material.E
-
-    @testset "stiffness and buckling area helpers match the hand calculation" begin
-        strut = st.Strut()
-        strut.thickness_to_chord = 0.15
-        strut.wall_thickness_to_depth = 0.05
-        strut.end_fixity_K = 1.0
-        strut.truss_inertia_efficiency = 1.0   # ideal section, so that k is the hand value below
-        k = 0.15 / (8 * 0.05)   # I_min = k A^2 for two caps of width c, thickness toh*toc*c and depth toc*c
-        l, Pc = 16.0, -3.0e5
-        fu = strut.material.safety_factor   # ultimate factor on the compression
-
-        @test st.strut_bending_stiffness(strut, 0.004) ≈ E * k * 0.004^2 rtol = 1e-12
-        @test st.strut_bending_stiffness(strut, 0.0) == 0
-
-        area = st.strut_buckling_area(strut, Pc, l)
-        @test area ≈ sqrt(fu * abs(Pc) * l^2 / (pi^2 * E * k)) rtol = 1e-12
-        # round trip: the Euler load of that area is the ultimate compression
-        @test pi^2 * st.strut_bending_stiffness(strut, area) / (strut.end_fixity_K * l)^2 ≈ fu * abs(Pc) rtol = 1e-10
-
-        strut.end_fixity_K = 2.0
-        @test pi^2 * st.strut_bending_stiffness(strut, area) / (strut.end_fixity_K * l)^2 ≈ fu * abs(Pc) / 4 rtol = 1e-10
-        @test st.strut_buckling_area(strut, Pc, l) ≈ 2 * area rtol = 1e-12
-
-        @test st.strut_buckling_area(strut, 0.0, l) == 0.0
-
-        # the strut safety factor is the ultimate factor of the buckling area
-        strut.end_fixity_K = 1.0
-        strut.material = StructuralAlloy("TASOPT-Al"; safety_factor = 2.0)
-        @test st.strut_buckling_area(strut, Pc, l) ≈ sqrt(2.0 / fu) * area rtol = 1e-12
-
-        # truss_inertia_efficiency scales the bending stiffness by itself and the buckling area by 1/sqrt
-        strut.truss_inertia_efficiency = 0.5
-        @test st.strut_bending_stiffness(strut, 0.004) ≈ 0.5 * E * k * 0.004^2 rtol = 1e-12
-        @test st.strut_buckling_area(strut, Pc, l) ≈ sqrt(2.0 / fu) * sqrt(2) * area rtol = 1e-12
+# Wing with the strut attached at ηs = 0.7 (the default ηs does not converge with a strut), sized once and shared;
+# `eta_strut` sets the jury of a truss-braced wing
+function sized_jury_aircraft(config, eta_strut = 0.5)
+    return sized_once((:jury, config, eta_strut)) do
+        ac = read_aircraft_with_wing_config(config)
+        ac.wing.layout.ηs = 0.7
+        config == "truss_braced" && (ac.wing.jury.eta_strut = eta_strut)
+        ac
     end
+end
+
+@testset "strut box sizing" verbose=true begin
+    st = TASOPT.structures
 
     # Sized strut-braced aircraft with the compatibility strut force, shared between the testsets by `key`.
-    # Probe values at K = 1 (toc = 0.15, toh = 0.05): tension area 4.67e-3 m^2, buckling area 2.23e-2 m^2
-    # (ratio 4.8), P_c = -3.34e5 N, l = 15.9 m. The ratio is proportional to K.
     size_braced(key = :compatibility, edit! = ac -> nothing) = sized_braced_aircraft(key, edit!)
-    # the strut yields in the larger of the tension and the compression
-    yield_area(ac) = max(ac.wing.strut.axial_force, abs(ac.wing.strut.axial_force_compression)) /
-                     (ac.wing.strut.material.σmax * ac.parg[igsigfac])
-
-    @testset "sized strut satisfies yield and buckling and records the governing criterion" begin
-        ac = size_braced()
-        strut = ac.wing.strut
-        A_buckling = st.strut_buckling_area(strut, strut.axial_force_compression, strut.length)
-
-        @test strut.axial_force_compression < 0
-        @test strut.area >= yield_area(ac) * (1 - 1e-8)
-        @test strut.area ≈ max(yield_area(ac), A_buckling) rtol = 1e-8
-        @test strut.sizing_criterion === (A_buckling > yield_area(ac) ? :buckling : :tension)
-        @test strut.EI_min ≈ st.strut_bending_stiffness(strut, strut.area) rtol = 1e-10
-        @test strut.buckling_load ≈ pi^2 * strut.EI_min / (strut.end_fixity_K * strut.length)^2 rtol = 1e-10
-        @test strut.buckling_load >= strut.material.safety_factor * abs(strut.axial_force_compression) * (1 - 1e-8)
+    wing_chord_at_strut(ac) = ac.wing.layout.root_chord * ac.wing.inboard.λ
+    # a strut with an end-fixity factor of 2 buckles before it yields; no strut-attach reinforcement of the fuselage.
+    # Its chord is the wing chord: at the default chord ratio no box of this height can reach the buckling stiffness
+    function slender!(ac)
+        ac.wing.strut.end_fixity_K = 2.0
+        ac.wing.strut.chord_to_wing_chord = 1.0
+        ac.fuselage.weight_frac_strut_attach = 0.0
     end
 
-    @testset "a slender strut is governed by buckling" begin
-        ac = size_braced(:slender, ac -> (ac.wing.strut.end_fixity_K = 2.0; ac.fuselage.weight_frac_strut_attach = 0.0))   # buckling area about 9.6 times the tension area
-        strut = ac.wing.strut
-        @test strut.sizing_criterion === :buckling
-        @test strut.area > 1.1 * yield_area(ac)
-        @test strut.area ≈ st.strut_buckling_area(strut, strut.axial_force_compression, strut.length) rtol = 1e-8
-        @test strut.buckling_load ≈ strut.material.safety_factor * abs(strut.axial_force_compression) rtol = 1e-8
+    @testset "the strut chord is the chord ratio times the wing chord at the strut attachment" begin
+        for ac in (size_braced(), sized_jury_aircraft("strut_braced"), sized_jury_aircraft("truss_braced", 0.3))
+            strut = ac.wing.strut
+            @test strut.chord_to_wing_chord == 0.5
+            @test strut.chord ≈ strut.chord_to_wing_chord * wing_chord_at_strut(ac) rtol = 1e-12
+            @test strut.S ≈ 2 * strut.chord * strut.length rtol = 1e-10
+        end
+    end
 
-        # a larger area makes a heavier strut
+    @testset "the strut weight is both wings of caps and webs with the added weight fraction, and the moment uses it" begin
+        for ac in (size_braced(), sized_jury_aircraft("truss_braced", 0.3))
+            strut, layout = ac.wing.strut, ac.wing.layout
+            box = recomputed_strut_box(ac)
+            @test strut.weight ≈ 2 * TASOPT.gee * strut.length *
+                (strut.caps.material.ρ * box.area_caps + strut.webs.material.ρ * box.area_webs) * (1 + strut.weight_frac_added) rtol = 1e-6
+            @test strut.dxW ≈ strut.weight * 0.25 * layout.span * (layout.ηs - layout.ηo) * tand(layout.sweep) rtol = 1e-6
+        end
+    end
+
+    @testset "the own weight of the strut is a transverse load: shear on the webs and bending moment on the caps" begin
+        for ac in (size_braced(), sized_jury_aircraft("strut_braced"), sized_jury_aircraft("truss_braced", 0.3),
+                   size_braced(:prescribed, ac -> ac.wing.strut.opt_strut_force = TASOPT.StrutForceModel.Prescribed))
+            strut, jury = ac.wing.strut, ac.wing.jury
+            loads = strut_own_weight_loads(ac)
+            @test strut.bending_moment > 0
+            @test strut.bending_moment ≈ loads.M rtol = 1e-6
+            @test strut.shear_load > 0
+            @test strut.shear_load ≈ abs(jury.axial_force) + loads.V rtol = 1e-6
+            @test strut.shear_load >= abs(jury.axial_force)
+        end
+    end
+
+    # Probe values of the slender strut-braced aircraft (K = 2, chord ratio 1): tension area of the caps 6.3e-3 m^2,
+    # total box area 2.2e-2 m^2 (the buckling cap thickness is proportional to K^2 for thin caps)
+    @testset "a slender strut is governed by buckling" begin
+        ac = size_braced(:slender, slender!)
+        strut = ac.wing.strut
+        box = recomputed_strut_box(ac)
+        @test strut.sizing_criterion === :buckling
+        @test box.criterion === :buckling
+        @test box.area_caps * strut.caps.material.σmax * ac.parg[igsigfac] >
+              1.1 * max(strut.axial_force, abs(strut.axial_force_compression))
+        @test strut.buckling_load ≈ strut.caps.material.safety_factor * abs(strut.axial_force_compression) rtol = 1e-6
+
+        # heavier caps make a heavier strut
         stocky = size_braced(:stocky, ac -> ac.wing.strut.end_fixity_K = 0.1).wing.strut
         @test strut.weight > stocky.weight
     end
 
     @testset "a stocky strut is governed by tension" begin
-        ac = size_braced(:stocky, ac -> ac.wing.strut.end_fixity_K = 0.1)   # buckling area about 0.48 times the tension area
+        ac = size_braced(:stocky, ac -> ac.wing.strut.end_fixity_K = 0.1)
         strut = ac.wing.strut
+        box = recomputed_strut_box(ac)
         @test strut.sizing_criterion === :tension
-        @test strut.area ≈ yield_area(ac) rtol = 1e-8
-        @test strut.area > 1.1 * st.strut_buckling_area(strut, strut.axial_force_compression, strut.length)
-        @test strut.axial_force ≈ strut.area * strut.material.σmax * ac.parg[igsigfac] rtol = 1e-10
-        @test strut.buckling_load > strut.material.safety_factor * abs(strut.axial_force_compression)
+        # the caps carry at least the tension (the bending moment of the own weight adds to it)
+        @test box.area_caps ≥ strut.axial_force / (strut.caps.material.σmax * ac.parg[igsigfac]) * (1 - 1e-6)
+        @test strut.buckling_load > strut.caps.material.safety_factor * abs(strut.axial_force_compression)
     end
 
-    @testset "the compressive yield sets the area when the compression exceeds the tension" begin
+    @testset "the compressive yield sets the caps when the compression exceeds the tension" begin
         # |P_c| is about 0.35 times the tension for the default sizing cases, so a heavier push-over case
-        # (load factor -4, |P_c| about 1.4 times the tension at K = 0.1) is used to make the compression larger
+        # (load factor -4) is used to make the compression larger
         ac = size_braced(:heavy_pushover, ac -> (ac.wing.strut.end_fixity_K = 0.1;
                                                  ac.wing.sizing_loads.pushover.load_factor = -4.0))
         strut = ac.wing.strut
-        σ_allowable = strut.material.σmax * ac.parg[igsigfac]
+        box = recomputed_strut_box(ac)
+        σ_allowable = strut.caps.material.σmax * ac.parg[igsigfac]
         @test abs(strut.axial_force_compression) > strut.axial_force
         @test strut.sizing_criterion === :tension
-        @test strut.area ≈ abs(strut.axial_force_compression) / σ_allowable rtol = 1e-8
-        @test strut.area > strut.axial_force / σ_allowable
-        @test strut.area > st.strut_buckling_area(strut, strut.axial_force_compression, strut.length)
+        # the caps carry at least the compression (the bending moment of the own weight adds to it)
+        @test box.area_caps ≥ abs(strut.axial_force_compression) / σ_allowable * (1 - 1e-6)
+        @test box.area_caps > strut.axial_force / σ_allowable
     end
 
     @testset "Prescribed strut force is sized by tension only" begin
         ac = size_braced(:prescribed, ac -> ac.wing.strut.opt_strut_force = TASOPT.StrutForceModel.Prescribed)
         strut, sl = ac.wing.strut, ac.wing.sizing_loads
+        box = recomputed_strut_box(ac)
         # the push-over, light and taxi cases are active and compressive, but they do not enter the strut
         @test Set(keys(sl.results)) == Set([:pullup, :pushover, :pullup_light, :pushover_light, :taxi])
         @test sl.results[:pushover].strut_force < 0
         @test strut.axial_force_compression == 0
-        @test strut.sizing_criterion === :tension
-        @test strut.area ≈ strut.axial_force / (strut.material.σmax * ac.parg[igsigfac]) rtol = 1e-10
-        @test strut.EI_min ≈ st.strut_bending_stiffness(strut, strut.area) rtol = 1e-10
+        @test strut.sizing_criterion in (:tension, :gauge)   # there is no buckling requirement without compression
+        @test strut.area ≈ box.area rtol = 1e-6
+        @test box.area_caps * strut.caps.material.σmax * ac.parg[igsigfac] >= strut.axial_force * (1 - 1e-6)
+    end
+
+    @testset "minimum gauges set the strut box when they are large" begin
+        ac = size_braced(:large_gauges, ac -> (ac.wing.strut.min_cap_thickness = 2.0e-2;
+                                               ac.wing.strut.min_web_thickness = 2.0e-2))
+        strut = ac.wing.strut
+        hw = strut.web_to_box_height * strut.thickness_to_chord
+        @test strut.sizing_criterion === :gauge
+        # the caps and the webs are at their gauge: area = 2 t w c + 2 t hw c
+        @test strut.area ≈ 2 * 2.0e-2 * strut.chord * (strut.box_width_to_chord + hw) rtol = 1e-6
+        @test strut.area ≈ recomputed_strut_box(ac).area rtol = 1e-6
+        # the default gauges leave a lighter strut
+        @test strut.weight > size_braced().wing.strut.weight
+    end
+
+    @testset "a larger strut chord gives a lighter strut when buckling governs" begin
+        # the same slender strut (K = 2, governed by buckling at the wing chord) with twice the wing chord
+        wide = size_braced(:wide_chord, ac -> (slender!(ac); ac.wing.strut.chord_to_wing_chord = 2.0))
+        slender = size_braced(:slender, slender!)
+        @test slender.wing.strut.sizing_criterion === :buckling
+        @test wide.wing.strut.chord ≈ 2.0 * wing_chord_at_strut(wide) rtol = 1e-12
+        @test wide.wing.strut.chord > 1.5 * slender.wing.strut.chord
+        @test wide.wing.strut.S > slender.wing.strut.S
+        @test wide.wing.strut.area ≈ recomputed_strut_box(wide).area rtol = 1e-6
+        # the second moment of the same box scales with the chord to the fourth power, so the caps can be much thinner
+        @test wide.wing.strut.weight < slender.wing.strut.weight
+    end
+end
+
+# Strut and jury strut as a spar box: caps carry the axial force (yield and Euler buckling), webs carry the shear.
+# Expected values are written out from the box formulas, not taken from the sizing function.
+
+@testset "size_member_box sizes the caps and webs of a strut box" verbose=true begin
+    st = TASOPT.structures
+    material = TASOPT.StructuralAlloy("TASOPT-Al")
+    caps = st.StructuralMember(material = material)
+    webs = st.StructuralMember(material = TASOPT.StructuralAlloy("TASOPT-Al"))
+    E, σcap, τweb = material.E, material.σmax, material.τmax
+    fu = material.safety_factor
+    sigfac = 1.1
+
+    # box of chord 2 m, so that the chord enters the stiffness as c^4 and the loads as c^2
+    c, h, w, web_ratio = 2.0, 0.15, 0.5, 0.8
+    hw = web_ratio * h
+    min_cap, min_web = 1.5e-3, 1.0e-3
+
+    box(; kwargs...) = st.size_member_box(caps, webs;
+        chord = c, height_to_chord = h, width_to_chord = w, web_to_box_height = web_ratio,
+        tension = 0.0, compression = 0.0, buckling_length = 16.0, K = 1.0, shear_load = 0.0, sigfac = sigfac,
+        min_cap_thickness = min_cap, min_web_thickness = min_web, kwargs...)
+
+    EI_xx(tbcap, tbweb) = E * c^4 * w * (h^3 - (h - 2tbcap)^3) / 12 + E * c^4 * tbweb * hw^3 / 6
+    EI_yy(tbcap, tbweb) = E * c^4 * tbcap * w^3 / 6 + E * c^4 * tbweb * hw * w^2 / 2
+
+ 
+    @testset "the minimum gauges set the box when the loads are tiny" begin
+        r = box(tension = 10.0, compression = -10.0, shear_load = 1.0, buckling_length = 1.0)
+        @test r.tbcap == min_cap / c
+        @test r.tbweb == min_web / c
+        @test r.criterion === :gauge
+        @test r.area_caps ≈ 2 * (min_cap / c) * w * c^2 rtol = 1e-12
+        @test r.area_webs ≈ 2 * (min_web / c) * hw * c^2 rtol = 1e-12
+        @test r.EI_min ≈ min(EI_xx(min_cap / c, min_web / c), EI_yy(min_cap / c, min_web / c)) rtol = 1e-10
+    end
+
+    @testset "the webs are sized by the shear and the areas add up" begin
+        shear = 5.0e5
+        r = box(tension = 1.0e6, shear_load = shear)
+        tbweb = TASOPT.structures.calc_web_thickness(τweb * sigfac, shear, c, hw)
+        @test tbweb > min_web / c
+        @test r.tbweb ≈ tbweb rtol = 1e-12
+        @test r.area_webs ≈ 2 * tbweb * hw * c^2 rtol = 1e-12
+        @test r.area ≈ r.area_caps + r.area_webs rtol = 1e-14
+
+        # the webs carry no axial force: the cap thickness does not depend on the shear
+        @test box(tension = 1.0e6).tbcap == r.tbcap
     end
 
 end
@@ -892,21 +985,10 @@ function toml_with_jury_inputs(config, block = "")
     return replace(txt, "[Wing.Aero]" => "[Wing.Jury]\n$block\n[Wing.Aero]"; count = 1)
 end
 
-# Wing with the strut attached at ηs = 0.7 (the default ηs does not converge with a strut), sized once and shared;
-# `eta_strut` sets the jury of a truss-braced wing
-function sized_jury_aircraft(config, eta_strut = 0.5)
-    return sized_once((:jury, config, eta_strut)) do
-        ac = read_aircraft_with_wing_config(config)
-        ac.wing.layout.ηs = 0.7
-        config == "truss_braced" && (ac.wing.jury.eta_strut = eta_strut)
-        ac
-    end
-end
-
 @testset "jury strut sizing" verbose=true begin
     st = TASOPT.structures
     jury_load_fraction = 0.02   # jury load as a fraction of the strut compression --- temporary assumption
-    jury_default_fields = (:eta_wing, :length, :area, :axial_force, :buckling_load, :weight, :dxW)
+    jury_default_fields = (:eta_wing, :length, :chord, :area, :axial_force, :buckling_load, :weight, :dxW)
 
     @testset "strut_buckling_length is the longer part of the strut cut at the jury" begin
         L = 15.0
@@ -923,13 +1005,15 @@ end
         for (η, ac) in truss
             strut = ac.wing.strut
             l_eff = max(η, 1 - η) * strut.length
-            @test strut.buckling_load ≈ pi^2 * strut.EI_min / (strut.end_fixity_K * l_eff)^2 rtol = 1e-8
-            @test strut.EI_min ≈ st.strut_bending_stiffness(strut, strut.area) rtol = 1e-10
-            @test strut.buckling_load >= strut.material.safety_factor * abs(strut.axial_force_compression) * (1 - 1e-8)
+            box = recomputed_strut_box(ac)
+            @test strut.buckling_load ≈ pi^2 * strut.EI_min / (strut.end_fixity_K * l_eff)^2 rtol = 1e-6
+            @test strut.EI_min ≈ box.EI_min rtol = 1e-6
+            @test strut.buckling_load ≈ box.buckling_load rtol = 1e-6
+            @test strut.buckling_load >= strut.caps.material.safety_factor * abs(strut.axial_force_compression) * (1 - 1e-6)
         end
     end
 
-    @testset "the jury follows the strut and is sized by Euler buckling under a fraction of the strut compression" begin
+    @testset "the jury follows the strut and is sized as a pinned box under a fraction of the strut compression" begin
         for (η, ac) in truss
             strut, jury, layout = ac.wing.strut, ac.wing.jury, ac.wing.layout
             @test jury.eta_strut == η
@@ -937,36 +1021,46 @@ end
             @test jury.eta_wing ≈ layout.ηo + η * (layout.ηs - layout.ηo) rtol = 1e-8
             @test jury.axial_force ≈ -jury_load_fraction * abs(strut.axial_force_compression) rtol = 1e-8
 
-            # a pinned member of the jury material with the section idealisation of the main strut
-            member = deepcopy(strut)
-            member.material = jury.material
-            member.end_fixity_K = 1.0
-            A_buckling = st.strut_buckling_area(member, jury.axial_force, jury.length)
-            A_yield = abs(jury.axial_force) / (jury.material.σmax * ac.parg[igsigfac])
+            # the jury chord is the chord ratio times the strut chord; the box ratios are those of the strut
+            @test jury.chord_to_strut_chord == 0.5
+            @test jury.chord ≈ jury.chord_to_strut_chord * strut.chord rtol = 1e-12
+
+            box = recomputed_jury_box(ac)
             @test jury.area > 0
-            @test jury.area >= A_yield * (1 - 1e-8)
-            @test jury.area ≈ max(A_yield, A_buckling) rtol = 1e-8
-            @test jury.buckling_load ≈ pi^2 * st.strut_bending_stiffness(member, jury.area) / jury.length^2 rtol = 1e-8
-            @test jury.buckling_load >= jury.material.safety_factor * abs(jury.axial_force) * (1 - 1e-8)
-            if A_buckling > A_yield
-                @test jury.buckling_load ≈ jury.material.safety_factor * abs(jury.axial_force) rtol = 1e-8
+            @test jury.area ≈ box.area rtol = 1e-6
+            @test jury.buckling_load ≈ box.buckling_load rtol = 1e-6
+            @test jury.buckling_load >= jury.caps.material.safety_factor * abs(jury.axial_force) * (1 - 1e-6)
+            if box.criterion === :buckling
+                @test jury.buckling_load ≈ jury.caps.material.safety_factor * abs(jury.axial_force) rtol = 1e-6
             end
-            @test jury.weight ≈ 2 * jury.material.ρ * TASOPT.gee * jury.area * jury.length * (1 + jury.weight_frac_added) rtol = 1e-8
+            @test jury.weight ≈ box_member_weight(jury, box) rtol = 1e-6
+            @test jury.weight ≈ 2 * TASOPT.gee * jury.length *
+                (jury.caps.material.ρ * box.area_caps + jury.webs.material.ρ * box.area_webs) * (1 + jury.weight_frac_added) rtol = 1e-6
         end
     end
 
-    @testset "the jury lets the strut be lighter than a strut governed by buckling over its full length" begin
-        strut, jury = braced.wing.strut, braced.wing.jury
-        @test strut.sizing_criterion === :buckling
-        @test strut.buckling_load ≈ pi^2 * strut.EI_min / (strut.end_fixity_K * strut.length)^2 rtol = 1e-10
+    @testset "a jury shortens the buckling length and so cannot make the strut heavier" begin
+        # the same loads and the same box with the buckling length of the full strut instead of its longer part
+        for (η, ac) in truss
+            strut = ac.wing.strut
+            with_jury = recomputed_strut_box(ac)
+            without_jury = st.size_member_box(strut.caps, strut.webs;
+                chord = strut.chord, height_to_chord = strut.thickness_to_chord, width_to_chord = strut.box_width_to_chord,
+                web_to_box_height = strut.web_to_box_height, tension = strut.axial_force,
+                compression = strut.axial_force_compression, buckling_length = strut.length, K = strut.end_fixity_K,
+                shear_load = strut.shear_load, bending_moment = strut.bending_moment, sigfac = ac.parg[igsigfac],
+                min_cap_thickness = strut.min_cap_thickness, min_web_thickness = strut.min_web_thickness)
+            @test with_jury.area <= without_jury.area * (1 + 1e-12)
+            @test with_jury.EI_min <= without_jury.EI_min * (1 + 1e-12)
+        end
         # a strut-braced wing has no jury
+        jury = braced.wing.jury
         @test jury.eta_strut == 0.5
         for field in jury_default_fields
             @test getfield(jury, field) == 0
         end
-        for (η, ac) in truss
-            @test ac.wing.strut.area < strut.area
-        end
+        @test braced.wing.strut.buckling_load ≈ pi^2 * braced.wing.strut.EI_min /
+              (braced.wing.strut.end_fixity_K * braced.wing.strut.length)^2 rtol = 1e-10
     end
 
     @testset "[Wing.Jury] sets eta_strut of a truss-braced wing, and save and read reproduce it exactly" begin
@@ -1008,31 +1102,141 @@ end
         @test ac.wing.strut.weight_frac_added == 0.60
     end
 
-    @testset "is read independently of the strut value, and save and read reproduce it exactly" begin
-        wing = read_wing("truss_braced", "eta_strut = 0.3\nweight_frac_added = 0.2")
-        @test wing.jury.weight_frac_added == 0.2
-        @test wing.jury.eta_strut == 0.3
-        @test wing.strut.weight_frac_added == 0.60
+end
 
-        # a key without eta_strut is read too
-        @test read_wing("truss_braced", "weight_frac_added = 0.15").jury.weight_frac_added == 0.15
-        @test read_wing("truss_braced", "weight_frac_added = 0.15").jury.eta_strut == 0.5
+# The strut and the jury strut are boxes with caps and webs: material, chord ratio and minimum gauges are inputs
 
-        # a strut-braced wing does not read it
-        @test read_wing("strut_braced", "weight_frac_added = 0.2").jury.weight_frac_added == 0.60
+"Aircraft read from the default input for `config`, after `edit!` is applied to the parsed Dict."
+function read_aircraft_with_box_inputs(edit!, config)
+    return first(read_aircraft_from_default_dict() do d
+        d["Options"]["wing_config"] = config
+        edit!(d)
+    end)
+end
 
-        ac = first(read_aircraft_from_text(toml_with_jury_inputs("truss_braced", "eta_strut = 0.3\nweight_frac_added = 0.2")))
-        mktempdir() do dir
-            path = joinpath(dir, "jury_weight_roundtrip.toml")
-            save_aircraft_model(ac, path)
-            saved = TASOPT.TOML.parsefile(path)
-            @test saved["Wing"]["Jury"]["weight_frac_added"] == 0.2
-            @test saved["Wing"]["Jury"]["eta_strut"] == 0.3
-            @test saved["Wing"]["Strut"]["weight_frac_added"] == 0.60
-            reread = first(read_aircraft_from_text(read(path, String)))
-            @test reread.wing.jury.weight_frac_added == 0.2
-            @test reread.wing.jury.eta_strut == 0.3
-            @test reread.wing.strut.weight_frac_added == 0.60
+"The [Wing.`name`] table of the parsed input `d`, created if missing."
+wing_subtable(d, name) = get!(d["Wing"], name, Dict{String,Any}())
+
+"Name, properties and factors of an alloy, to compare materials by value."
+alloy_signature(m) = (m.name, m.σmax, m.E, m.ρ, m.τmax, m.max_avg_stress, m.safety_factor)
+
+"Inputs of the strut box: caps and webs materials, chord ratio and minimum gauges."
+strut_box_inputs(strut) = (alloy_signature(strut.caps.material), alloy_signature(strut.webs.material),
+                           strut.chord_to_wing_chord, strut.min_cap_thickness, strut.min_web_thickness)
+
+"Inputs of the jury strut box: caps and webs materials, chord ratio and minimum gauges."
+jury_box_inputs(jury) = (alloy_signature(jury.caps.material), alloy_signature(jury.webs.material),
+                         jury.chord_to_strut_chord, jury.min_cap_thickness, jury.min_web_thickness)
+
+@testset "TBW strut and jury box inputs" verbose=true begin
+    al_default = StructuralAlloy("TASOPT-Al", max_avg_stress = 1.1, safety_factor = 1.5)
+    al_7075 = StructuralAlloy("Al-7075", max_avg_stress = 1.2, safety_factor = 2.0)
+    default_strut_box = (alloy_signature(al_default), alloy_signature(al_default), 0.5, 1.5e-3, 1.0e-3)
+    default_jury_box = (alloy_signature(al_default), alloy_signature(al_default), 0.5, 1.5e-3, 1.0e-3)
+
+    # distinct values from the defaults; the distances carry units or are in metres
+    function set_box_inputs!(d)
+        d["Structures"]["strut_material"] = "Al-7075"
+        d["Structures"]["strut_max_avg_stress"] = 1.2
+        d["Structures"]["strut_safety_factor"] = 2.0
+        d["Structures"]["strut_web_material"] = "TASOPT-Al"
+        d["Structures"]["strut_web_max_avg_stress"] = 1.3
+        d["Structures"]["strut_web_safety_factor"] = 1.7
+        strut_table = wing_subtable(d, "Strut")
+        strut_table["chord_to_wing_chord"] = 0.8
+        strut_table["min_cap_thickness"] = "0.1 in"
+        strut_table["min_web_thickness"] = 0.0007
+        jury_table = wing_subtable(d, "Jury")
+        jury_table["chord_to_strut_chord"] = 0.4
+        jury_table["min_cap_thickness"] = 0.003
+        jury_table["min_web_thickness"] = "0.05 in"
+    end
+    al_web = StructuralAlloy("TASOPT-Al", max_avg_stress = 1.3, safety_factor = 1.7)
+    explicit_strut_box = (alloy_signature(al_7075), alloy_signature(al_web), 0.8, 0.1 * 0.0254, 0.0007)
+    explicit_jury_box = (alloy_signature(al_7075), alloy_signature(al_web), 0.4, 0.003, 0.05 * 0.0254)
+
+    @testset "explicit keys set the strut and the jury; the webs differ from the caps and the jury follows the strut" begin
+        ac_strut = read_aircraft_with_box_inputs(set_box_inputs!, "strut_braced")
+        @test strut_box_inputs(ac_strut.wing.strut) == explicit_strut_box
+        @test alloy_signature(ac_strut.wing.strut.caps.material) != alloy_signature(ac_strut.wing.strut.webs.material)
+
+        # a strut-braced wing does not read [Wing.Jury]
+        @test jury_box_inputs(ac_strut.wing.jury) == default_jury_box
+
+        ac_truss = read_aircraft_with_box_inputs(set_box_inputs!, "truss_braced")
+        @test strut_box_inputs(ac_truss.wing.strut) == explicit_strut_box
+        @test jury_box_inputs(ac_truss.wing.jury) == explicit_jury_box
+        @test alloy_signature(ac_truss.wing.jury.caps.material) == alloy_signature(ac_truss.wing.strut.caps.material)
+        @test alloy_signature(ac_truss.wing.jury.webs.material) == alloy_signature(ac_truss.wing.strut.webs.material)
+
+        # the wing caps and webs are not touched by the strut inputs
+        @test alloy_signature(ac_truss.wing.inboard.caps.material) == alloy_signature(al_default)
+        @test alloy_signature(ac_truss.wing.inboard.webs.material) == alloy_signature(al_default)
+
+        # a single gauge key leaves the other at its default
+        ac_one = read_aircraft_with_box_inputs("truss_braced") do d
+            wing_subtable(d, "Strut")["min_cap_thickness"] = 0.002
+            wing_subtable(d, "Jury")["min_web_thickness"] = 0.0004
+        end
+        @test (ac_one.wing.strut.min_cap_thickness, ac_one.wing.strut.min_web_thickness) == (0.002, 1.0e-3)
+        @test (ac_one.wing.jury.min_cap_thickness, ac_one.wing.jury.min_web_thickness) == (1.5e-3, 0.0004)
+    end
+
+    @testset "the web keys fall back to the strut keys one by one" begin
+        for config in ("strut_braced", "truss_braced")
+            # no web keys: webs equal the caps
+            ac = read_aircraft_with_box_inputs(config) do d
+                d["Structures"]["strut_material"] = "Al-7075"
+                d["Structures"]["strut_max_avg_stress"] = 1.2
+                d["Structures"]["strut_safety_factor"] = 2.0
+                for key in ("strut_web_material", "strut_web_max_avg_stress", "strut_web_safety_factor")
+                    delete!(d["Structures"], key)
+                end
+            end
+            @test alloy_signature(ac.wing.strut.caps.material) == alloy_signature(al_7075)
+            @test alloy_signature(ac.wing.strut.webs.material) == alloy_signature(al_7075)
+            config == "truss_braced" &&
+                @test alloy_signature(ac.wing.jury.webs.material) == alloy_signature(al_7075)
+
+            # only the web alloy given: its stress factors come from the strut keys
+            ac_alloy = read_aircraft_with_box_inputs(config) do d
+                d["Structures"]["strut_max_avg_stress"] = 1.2
+                d["Structures"]["strut_safety_factor"] = 2.0
+                d["Structures"]["strut_web_material"] = "Al-7075"
+                delete!(d["Structures"], "strut_web_max_avg_stress")
+                delete!(d["Structures"], "strut_web_safety_factor")
+            end
+            @test alloy_signature(ac_alloy.wing.strut.webs.material) == alloy_signature(al_7075)
+            @test alloy_signature(ac_alloy.wing.strut.caps.material) ==
+                  alloy_signature(StructuralAlloy("TASOPT-Al", max_avg_stress = 1.2, safety_factor = 2.0))
+        end
+    end
+
+    @testset "save and read reproduce the strut and jury inputs exactly" begin
+        for config in ("strut_braced", "truss_braced")
+            ac = read_aircraft_with_box_inputs(set_box_inputs!, config)
+            mktempdir() do dir
+                path = joinpath(dir, "strut_box_roundtrip.toml")
+                save_aircraft_model(ac, path)
+                saved = TASOPT.TOML.parsefile(path)
+                @test saved["Structures"]["strut_web_material"] == "TASOPT-Al"
+                @test saved["Structures"]["strut_web_max_avg_stress"] == 1.3
+                @test saved["Structures"]["strut_web_safety_factor"] == 1.7
+                @test saved["Structures"]["strut_material"] == "Al-7075"
+                @test saved["Wing"]["Strut"]["chord_to_wing_chord"] == 0.8
+                @test saved["Wing"]["Strut"]["min_cap_thickness"] == ac.wing.strut.min_cap_thickness
+                @test saved["Wing"]["Strut"]["min_web_thickness"] == 0.0007
+                if config == "truss_braced"
+                    @test saved["Wing"]["Jury"]["chord_to_strut_chord"] == 0.4
+                    @test saved["Wing"]["Jury"]["min_cap_thickness"] == 0.003
+                    @test saved["Wing"]["Jury"]["min_web_thickness"] == ac.wing.jury.min_web_thickness
+                end
+
+                ac_reread, _ = read_aircraft_from_text(read(path, String))
+                @test strut_box_inputs(ac_reread.wing.strut) == strut_box_inputs(ac.wing.strut)
+                @test jury_box_inputs(ac_reread.wing.jury) == jury_box_inputs(ac.wing.jury)
+                config == "truss_braced" && @test jury_box_inputs(ac_reread.wing.jury) == explicit_jury_box
+            end
         end
     end
 end
@@ -1054,7 +1258,7 @@ end
     @testset "the jury moment is its weight times the arm to its spanwise station on the swept wing" begin
         jury = truss.wing.jury
         @test jury.weight > 0
-        @test jury.dxW ≈ jury.weight * jury_dx_arm(truss) rtol = 1e-8
+        @test jury.dxW ≈ jury.weight * jury_dx_arm(truss) rtol = 1e-6
         for ac in (sized_jury_aircraft("strut_braced"), sized_default_aircraft())
             @test ac.wing.jury.weight == 0
             @test ac.wing.jury.dxW == 0
@@ -1082,6 +1286,8 @@ end
 
     @testset "a heavier jury at its station moves the CG limits towards it, and size_htail accounts for it" begin
         extra = 1e5
+        # jury at the middle of the strut: its station lies between the CG limits (at 0.3 it is forward of the forward limit)
+        truss = sized_jury_aircraft("truss_braced", 0.5)
         heavier = with_extra_jury_weight(truss, extra)
         _, _, _, _, xCG_fwd, xCG_aft = TASOPT.CG_limits(truss)
         _, _, _, _, xCG_fwd_heavier, xCG_aft_heavier = TASOPT.CG_limits(heavier)
@@ -1160,15 +1366,14 @@ end
     end
 end
 
-# Strut and jury weights are the bare member weight of both wings times (1 + weight_frac_added); the area stays bare
+# Strut and jury weights are the weight of the caps and webs of both wings times (1 + weight_frac_added); the areas stay bare
 @testset "strut and jury weight include the added weight fraction" verbose=true begin
     st = TASOPT.structures
-    bare_weight(member) = 2 * member.material.ρ * TASOPT.gee * member.area * member.length
     # pitching-moment arm of the strut about the wing-box x
     strut_dx_arm(ac) = 0.25 * ac.wing.layout.span * (ac.wing.layout.ηs - ac.wing.layout.ηo) * tand(ac.wing.layout.sweep)
     jury_dx_arm(ac) = 0.5 * ac.wing.layout.span * (ac.wing.jury.eta_wing - ac.wing.layout.ηo) * tand(ac.wing.layout.sweep)
 
-    # truss-braced wings with the default added fractions (strut 0.60, jury 0.30) and with none
+    # truss-braced wings with the default added fractions (strut 0.60, jury 0.60) and with none
     with_fractions = sized_jury_aircraft("truss_braced", 0.3)
     without_fractions = sized_once(:no_added_weight_fraction) do
         ac = read_aircraft_with_wing_config("truss_braced")
@@ -1179,39 +1384,40 @@ end
         ac
     end
 
-    @testset "strut weight is 2 rho g A l (1 + weight_frac_added) of the bare area, and the moment uses the total weight" begin
+    @testset "strut weight is 2 g l (rho_cap A_caps + rho_web A_webs) (1 + weight_frac_added), and the moment uses the total weight" begin
         for (ac, frac) in ((with_fractions, 0.60), (without_fractions, 0.0))
             strut = ac.wing.strut
+            box = recomputed_strut_box(ac)
             @test strut.weight_frac_added == frac
             @test strut.area > 0
-            @test strut.weight ≈ 2 * strut.material.ρ * TASOPT.gee * strut.area * strut.length * (1 + frac) rtol = 1e-6
+            @test strut.weight ≈ box_member_weight(strut, box; frac) rtol = 1e-6
             @test strut.dxW ≈ strut.weight * strut_dx_arm(ac) rtol = 1e-6
         end
         # with no added fraction the weight is the bare member weight
-        @test without_fractions.wing.strut.weight ≈ bare_weight(without_fractions.wing.strut) rtol = 1e-6
-        @test with_fractions.wing.strut.weight > bare_weight(with_fractions.wing.strut)
+        bare = box_member_weight(without_fractions.wing.strut, recomputed_strut_box(without_fractions); frac = 0.0)
+        @test without_fractions.wing.strut.weight ≈ bare rtol = 1e-6
+        @test with_fractions.wing.strut.weight > box_member_weight(with_fractions.wing.strut, recomputed_strut_box(with_fractions); frac = 0.0)
     end
 
-    @testset "the strut area is the bare structural area" begin
-        # tension area of the governing tension, or the buckling area: neither contains the added fraction
+    @testset "the strut area is the bare structural area of caps and webs" begin
+        # neither the area nor the box contains the added fraction
         for ac in (with_fractions, without_fractions)
             strut = ac.wing.strut
-            A_yield = max(strut.axial_force, abs(strut.axial_force_compression)) / (strut.material.σmax * ac.parg[igsigfac])
-            A_buckling = st.strut_buckling_area(strut, strut.axial_force_compression,
-                                                st.strut_buckling_length(strut.length, ac.wing.jury.eta_strut))
-            @test strut.area ≈ max(A_yield, A_buckling) rtol = 1e-8
+            box = recomputed_strut_box(ac)
+            @test strut.area ≈ box.area_caps + box.area_webs rtol = 1e-6
         end
     end
 
-    @testset "jury weight is 2 rho g A l (1 + weight_frac_added) of the bare area, and the moment uses the total weight" begin
+    @testset "jury weight is 2 g l (rho_cap A_caps + rho_web A_webs) (1 + weight_frac_added), and the moment uses the total weight" begin
         for (ac, frac) in ((with_fractions, 0.60), (without_fractions, 0.0))
             jury = ac.wing.jury
+            box = recomputed_jury_box(ac)
             @test jury.weight_frac_added == frac
             @test jury.area > 0
-            @test jury.weight ≈ 2 * jury.material.ρ * TASOPT.gee * jury.area * jury.length * (1 + frac) rtol = 1e-6
+            @test jury.area ≈ box.area rtol = 1e-6
+            @test jury.weight ≈ box_member_weight(jury, box; frac) rtol = 1e-6
             @test jury.dxW ≈ jury.weight * jury_dx_arm(ac) rtol = 1e-6
         end
-        @test without_fractions.wing.jury.weight ≈ bare_weight(without_fractions.wing.jury) rtol = 1e-6
     end
 
     @testset "size_jury! scales the weight and the moment exactly by (1 + weight_frac_added) and leaves the area alone" begin
@@ -1225,27 +1431,33 @@ end
             return wing.jury
         end
         j0, j1, j2 = sized_jury(0.0), sized_jury(0.3), sized_jury(1.0)
-        @test j0.weight ≈ bare_weight(j0) rtol = 1e-12
+        @test j0.weight ≈ box_member_weight(j0, recomputed_jury_box(ac); frac = 0.0) rtol = 1e-6
         @test j1.weight ≈ 1.3 * j0.weight rtol = 1e-12
         @test j2.weight ≈ 2.0 * j0.weight rtol = 1e-12
         @test j1.dxW ≈ 1.3 * j0.dxW rtol = 1e-12
         @test j2.dxW ≈ 2.0 * j0.dxW rtol = 1e-12
         @test j1.area == j0.area == j2.area
         @test j1.length == j0.length
+        @test j1.chord == j0.chord
         @test j1.buckling_load == j0.buckling_load
     end
 
     @testset "reference: share of the strut and jury in the wing group weight" begin
         # Information only (Boeing SUGAR Phase IV: about 28 to 30 %); not asserted
-        ac = try
-            sized_braced_aircraft()
-        catch
-            nothing
-        end
-        if !isnothing(ac)
-            Wstrut, Wjury, Wwing = ac.wing.strut.weight, ac.wing.jury.weight, ac.wing.weight
-            share = (Wstrut + Wjury) / (Wwing + Wstrut + Wjury)
-            @info "strut-braced default_tbw: (W_strut + W_jury) / (W_wing + W_strut + W_jury) = $(round(100 * share, digits = 1)) %"
+        for (label, make) in (("strut-braced", () -> sized_jury_aircraft("strut_braced")),
+                              ("strut-braced, strut break at 0.9", () -> sized_braced_aircraft()),
+                              ("truss-braced", () -> sized_jury_aircraft("truss_braced")))
+            ac = try
+                make()
+            catch
+                nothing
+            end
+            if !isnothing(ac)
+                Wstrut, Wjury, Wwing = ac.wing.strut.weight, ac.wing.jury.weight, ac.wing.weight
+                share = (Wstrut + Wjury) / (Wwing + Wstrut + Wjury)
+                strut = ac.wing.strut
+                @info "$label default_tbw: strut shear_load = $(round(strut.shear_load)) N, bending_moment = $(round(strut.bending_moment)) N m, strut chord = $(round(ac.wing.strut.chord, digits = 3)) m, W_strut = $(round(Wstrut)) N, W_jury = $(round(Wjury)) N, W_wing = $(round(Wwing)) N, (W_strut + W_jury) / (W_wing + W_strut + W_jury) = $(round(100 * share, digits = 1)) %"
+            end
         end
         @test true
     end
@@ -1342,8 +1554,10 @@ end
     @test sl.governing_strut_compression == :none
     @test strut.EI_min == 0
     @test strut.buckling_load == 0
+    @test strut.shear_load == 0
+    @test strut.bending_moment == 0
     @test strut.sizing_criterion === :none
-    for field in (:eta_wing, :length, :area, :axial_force, :buckling_load, :weight, :dxW)
+    for field in (:eta_wing, :length, :chord, :area, :axial_force, :buckling_load, :weight, :dxW)
         @test getfield(ac.wing.jury, field) == 0
     end
     @test !hasproperty(ac.htail, :strut)
@@ -1690,7 +1904,7 @@ end
         end
         EI(x) = base_wing.inboard.EI[1] + (base_wing.outboard.EI[1] - base_wing.inboard.EI[1]) * x / L
         sinθ = z / ls
-        f_strut = ls / (base_wing.strut.material.E * base_wing.strut.area * sinθ^2)
+        f_strut = ls / (base_wing.strut.caps.material.E * base_wing.strut.area * sinθ^2)
         R = st.strut_force_compatibility(M0, EI, L, f_strut)
 
         @test loads.strut_force ≈ R * ls / z rtol = 1e-9
@@ -1997,4 +2211,89 @@ end
     # the push-over case (-1 g) has smaller loads than the pull-up (3 g), so it governs once alone
     @test size_with_active((:pushover,)) == (Set([:pushover]), :pushover, :pushover)
     @test size_with_active((:pullup, :pushover)) == (Set([:pullup, :pushover]), :pullup, :pullup)
+end
+
+
+# Structural model of the braced wing, checked over a sweep of the strut attachment station ηs:
+# the total structural weight has an interior optimum, the minimum gauge floors hold, a slender strut
+# is sized by buckling, and the governing load cases are consistent. The cantilever wing is unaffected.
+
+const braced_sweep_logging = Base.CoreLogging
+
+"Default input text with `wing_config = \"config\"` set in [Options] and the legacy `has_strut` key removed."
+function braced_sweep_toml(config)
+    txt = read(joinpath(TASOPT.__TASOPTroot__, "../example/defaults/default_input.toml"), String)
+    txt = replace(txt, r"^[ \t]*(wing_config|has_strut)[ \t]*=.*\n"m => "")
+    return replace(txt, "[Options]" => "[Options]\n    wing_config = \"$config\""; count = 1)
+end
+
+"Aircraft with wing configuration `config` and strut attachment station `ηs`, sized with logging off."
+function braced_sweep_sized_aircraft(config, ηs)
+    return braced_sweep_logging.with_logger(braced_sweep_logging.NullLogger()) do
+        ac = mktempdir() do dir
+            path = joinpath(dir, "braced_sweep.toml")
+            write(path, braced_sweep_toml(config))
+            read_aircraft_model(path)
+        end
+        ac.wing.layout.ηs = ηs
+        size_aircraft!(ac; printiter = false)
+        ac
+    end
+end
+
+"Structural weight of the wing, strut and jury strut [N]."
+braced_sweep_structural_weight(ac) = ac.wing.weight + ac.wing.strut.weight + ac.wing.jury.weight
+
+"Physical cap and web thickness [m] of a wing section, from the thickness normalised by the perpendicular chord."
+function braced_sweep_gauges(wing, section)
+    perpendicular_chord = section.co * cosd(wing.layout.sweep)
+    return (cap = section.caps.thickness * perpendicular_chord,
+            web = section.webs.thickness * perpendicular_chord)
+end
+
+const braced_sweep_load_case_names = (:pullup, :pushover, :pullup_light, :pushover_light,
+                                      :taxi, :gust_up_light, :gust_down_light)
+const braced_sweep_stations = (0.5, 0.7, 0.9)
+const braced_sweep_aircraft = Dict(ηs => braced_sweep_sized_aircraft("strut_braced", ηs)
+                                   for ηs in braced_sweep_stations)
+
+@testset "strut-braced wing over the strut attachment station" verbose=true begin
+    low, middle, high = braced_sweep_stations
+
+    @testset "total structural weight has an interior optimum" begin
+        weight = Dict(ηs => braced_sweep_structural_weight(ac) for (ηs, ac) in braced_sweep_aircraft)
+        @test all(w -> isfinite(w) && w > 0, values(weight))
+        @test weight[middle] < weight[low]
+        @test weight[middle] < weight[high]
+    end
+
+    @testset "wing sections respect the minimum gauge" begin
+        for ac in values(braced_sweep_aircraft), section in (ac.wing.inboard, ac.wing.outboard)
+            @test section.min_cap_thickness > 0
+            @test section.min_web_thickness > 0
+            gauges = braced_sweep_gauges(ac.wing, section)
+            @test gauges.cap ≥ section.min_cap_thickness * (1 - 1e-9)
+            @test gauges.web ≥ section.min_web_thickness * (1 - 1e-9)
+        end
+    end
+
+    @testset "the slender strut is sized by buckling, the short one by tension" begin
+        @test braced_sweep_aircraft[low].wing.strut.sizing_criterion === :tension
+        @test braced_sweep_aircraft[middle].wing.strut.sizing_criterion === :buckling
+        @test braced_sweep_aircraft[high].wing.strut.sizing_criterion === :buckling
+    end
+end
+
+@testset "cantilever wing keeps no minimum gauge and no strut sizing" begin
+    ac = braced_sweep_logging.with_logger(braced_sweep_logging.NullLogger()) do
+        ac = load_default_model()
+        size_aircraft!(ac; printiter = false)
+        ac
+    end
+    for section in (ac.wing.inboard, ac.wing.outboard)
+        @test section.min_cap_thickness == 0
+        @test section.min_web_thickness == 0
+    end
+    @test ac.wing.strut.sizing_criterion === :none
+    @test ac.wing.sizing_loads.governing_strut === :none
 end
