@@ -43,6 +43,14 @@ $TYPEDFIELDS
     local_velocity_ratio::Float64 = 0
     """Model for the force that the strut carries"""
     opt_strut_force::StrutForceModel.T = StrutForceModel.Compatibility
+    """Strut section lift coefficient divided by the mean section lift coefficient of the wing [-]. Zero for a strut that carries no lift."""
+    cl_ratio::Float64 = 0.0
+    """
+    Exponent ``p`` of the bound circulation shape of the strut, ``\\Gamma \\propto (1-\\xi^2)^p`` [-], with ``\\xi = 0`` at the fuselage end
+    and ``\\xi = 1`` at the wing end of the strut. Each strut is treated as half a wing mirrored about the fuselage:
+    the loading is largest at the fuselage and zero at the wing attachment. ``p = 0.5`` is elliptic.
+    """
+    spanload_exponent::Float64 = 0.0
 
     # Computed geometry
     """Strut Length [m] """
@@ -80,9 +88,9 @@ $TYPEDFIELDS
     sizing_criterion::Symbol = :none
 
     # Aerodynamics
-    """Strut lift coefficient"""
+    """Lift coefficient of both struts, referenced to the wing area, set by [`induced_drag!`](@ref)"""
     CL::Float64 = 0
-    """Strut lift divided by total lift"""
+    """Strut lift divided by total lift, set by [`induced_drag!`](@ref)"""
     lift_fraction::Float64 = 0
 
     # Weights
