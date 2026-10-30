@@ -730,3 +730,93 @@ end
         end
     end
 end
+
+"""
+Set a wing, tail and strut geometry, and the pitching-moment inputs of `balance_aircraft!`, on an unsized aircraft.
+The strut lift inputs come from `set_strut_lift_inputs!`. The wing has a sweep of 20°, a span of 35 m, the break at
+60 % of the span and a strut root 1 m from the centreline, so the strut attaches to the wing 10.5 m from the centreline.
+"""
+function set_strut_moment_test_case!(ac, cl_ratio; spanload_exponent = 0.5)
+    wing = ac.wing
+    wing.layout.S = 125.0
+    wing.layout.span = 35.0
+    wing.layout.ηs = 0.6
+    wing.layout.sweep = 20.0
+    wing.layout.root_chord = 5.0
+    wing.strut.y_root = 1.0
+    ac.htail.layout.S = 25.0
+    ac.htail.layout.root_chord = 2.0
+    ac.htail.layout.box_x = 30.0
+    set_strut_lift_inputs!(ac, cl_ratio; spanload_exponent)
+    ac.wing.strut.local_velocity_ratio = 1.1
+
+    para = view(ac.para, :, ipcruise1, 1)
+    para[iaCL] = 1.2
+    para[iaCLh] = 0.05
+    para[iaCMw1] = -0.1
+    para[iaCMh1] = -0.3
+    ac.parg[igdCLhdCL] = 0.2
+    return ac
+end
+
+"Neutral point and centre of pressure from `balance_aircraft!` at the cruise point without changing the geometry."
+function balance_neutral_point_and_cp!(ac)
+    TASOPT.balance_aircraft!(ac, 1, ipcruise1, 0.5, 1.0, 0.0, TrimVar.None)
+    return ac.para[iaxNP, ipcruise1, 1], ac.para[iaxCP, ipcruise1, 1]
+end
+
+@testset "Strut lift in the pitching moment" verbose=true begin
+    @testset "Strut lift share, lift arm and blended arm" begin
+        ac = set_strut_moment_test_case!(load_braced_aircraft_quietly(), 0.5; spanload_exponent = 0.0)
+        wing, config = ac.wing, ac.options.trefftz_config
+        co_CMw1 = -0.5
+
+        # Strut share of the lift: cl_ratio * strut area / wing area * velocity ratio squared
+        k = 0.5 * (10.0 / 125.0) * 1.1^2
+        @test TASOPT.strut_lift_share(wing, config) ≈ k rtol = 1e-14
+        wing.strut.cl_ratio = 0.0
+        @test TASOPT.strut_lift_share(wing, config) == 0.0
+        cantilever_config = load_aircraft_quietly().options.trefftz_config
+        wing.strut.cl_ratio = 0.5
+        @test TASOPT.strut_lift_share(wing, cantilever_config) == 0.0
+        wing.strut.cl_ratio = 0.0
+
+        # Strut lift centroid between the strut root (1 m) and the wing attachment (10.5 m) for
+        # loadings (1-ξ²)^p, with ξ = 0 at the fuselage end: 1/2 (p = 0), 3/8 (p = 1), 4/(3π) (p = 1/2)
+        for (p, ξ_cp) in ((0.0, 0.5), (1.0, 3 / 8), (0.5, 4 / (3π)))
+            wing.strut.spanload_exponent = p
+            @test TASOPT.strut_lift_arm(wing) ≈ -tand(20.0) * (1.0 + 9.5 * ξ_cp) rtol = 1e-12
+        end
+
+        # The blend keeps the cantilever arm bit-for-bit without strut lift
+        @test TASOPT.strut_blended_lift_arm(co_CMw1, wing, config) === co_CMw1
+        wing.strut.cl_ratio = 0.5
+        @test TASOPT.strut_blended_lift_arm(co_CMw1, wing, config) ≈
+              (1 - k) * co_CMw1 + k * (-tand(20.0) * (1.0 + 9.5 * 4 / (3π))) rtol = 1e-12
+        @test TASOPT.strut_blended_lift_arm(co_CMw1, wing, cantilever_config) === co_CMw1
+    end
+
+    @testset "balance_aircraft! neutral point and centre of pressure" begin
+        ac_no_strut_lift = set_strut_moment_test_case!(load_braced_aircraft_quietly(), 0.0)
+        ac_strut_lift = set_strut_moment_test_case!(load_braced_aircraft_quietly(), 0.5)
+        ac_cantilever = set_strut_moment_test_case!(load_aircraft_quietly(), 0.5)
+        ac_cantilever_no_strut_lift = set_strut_moment_test_case!(load_aircraft_quietly(), 0.0)
+
+        xNP_no_strut_lift, xCP_no_strut_lift = balance_neutral_point_and_cp!(ac_no_strut_lift)
+        xNP, xCP = balance_neutral_point_and_cp!(ac_strut_lift)
+
+        # Without strut lift, a braced and a cantilever aircraft balance identically; a cantilever
+        # aircraft ignores the strut lift input
+        @test (xNP_no_strut_lift, xCP_no_strut_lift) == balance_neutral_point_and_cp!(ac_cantilever_no_strut_lift)
+        @test (xNP_no_strut_lift, xCP_no_strut_lift) == balance_neutral_point_and_cp!(ac_cantilever)
+
+        # The strut lift replaces the wing lift arm co*CMw1 by the blended arm in both moment terms
+        wing, htail, para = ac_strut_lift.wing, ac_strut_lift.htail, ac_strut_lift.para[:, ipcruise1, 1]
+        co_CMw1 = wing.layout.root_chord * para[iaCMw1]
+        arm_shift = TASOPT.strut_blended_lift_arm(co_CMw1, wing, ac_strut_lift.options.trefftz_config) - co_CMw1
+        Sh_S = htail.layout.S / wing.layout.S
+        @test arm_shift != 0.0
+        @test xNP - xNP_no_strut_lift ≈ arm_shift * (ac_strut_lift.parg[igdCLhdCL] * Sh_S - 1.0) rtol = 1e-10
+        @test xCP - xCP_no_strut_lift ≈ -arm_shift * (para[iaCL] - para[iaCLh] * Sh_S) / para[iaCL] rtol = 1e-10
+    end
+end
