@@ -55,6 +55,79 @@ function trefftz_drag_for_test_case!(ac; reuse_cached_geometry = false)
     return para[iaCDi], para[iaspaneff]
 end
 
+"""
+Set the strut inputs that determine the strut lift on an unsized aircraft: an area, the free-stream velocity at the
+strut, `cl_ratio` and `spanload_exponent`. `set_trefftz_test_case!` leaves the strut inputs alone, so this can be
+called before `trefftz_drag_for_test_case!`.
+"""
+function set_strut_lift_inputs!(ac, cl_ratio; spanload_exponent = 0.5)
+    ac.wing.strut.S = 10.0
+    ac.wing.strut.local_velocity_ratio = 1.0
+    ac.wing.strut.cl_ratio = cl_ratio
+    ac.wing.strut.spanload_exponent = spanload_exponent
+    return ac
+end
+
+"Lift coefficient (referenced to the wing area) of the Trefftz points `i_first:i_last`, integrated from the bound circulation."
+function trefftz_surface_lift(ac, i_first, i_last)
+    geom = trefftz_aero.TREFFTZ_GEOM
+    panels = i_first:(i_last - 1)
+    return 2 * ac.wing.layout.span / (0.5 * ac.wing.layout.S) *
+           sum(geom.gc[i] * (geom.yp[i + 1] - geom.yp[i]) for i in panels)
+end
+
+"""
+Set the inputs of the strut profile drag, and everything else `aircraft_drag!` needs, on an unsized aircraft; return
+the `para` slice of mission 1, point 1 that `aircraft_drag!` writes to. The values are round numbers with no
+particular meaning, chosen so that the strut and the jury strut each have a distinct, non-zero drag.
+"""
+function set_strut_drag_test_case!(ac)
+    para = view(ac.para, :, 1, 1)
+    lift_inputs = set_trefftz_test_case!(ac)
+    for i in (iaCL, iaCLh, iarcls, iarclt)
+        para[i] = lift_inputs[i]
+    end
+    para[iaMach] = 0.78
+    para[iaReunit] = 7.0e6
+
+    ac.wing.layout.root_chord = 5.0
+    ac.htail.layout.root_chord = 2.0
+    ac.vtail.layout.root_chord = 2.0
+    ac.vtail.layout.span = 5.0
+    ac.vtail.layout.root_span = 1.0
+    ac.vtail.outboard.λ = 0.3
+
+    set_strut_lift_inputs!(ac, 0.0)
+    ac.wing.strut.chord = 0.8
+    ac.wing.strut.cos_lambda = 0.9
+    ac.wing.strut.local_velocity_ratio = 1.1
+    ac.wing.jury.chord = 0.4
+    ac.wing.jury.length = 2.5
+    return para
+end
+
+"Run `aircraft_drag!` for mission 1, point 1 and return the `para` slice, which holds `iaCDstrut` and `iaCD`."
+function strut_drag_for_test_case!(ac)
+    para = view(ac.para, :, 1, 1)
+    trefftz_aero.aircraft_drag!(ac, 1, 1, true)
+    return para
+end
+
+"Strut profile drag coefficient of the main strut for the inputs set on `ac` and `para`, from its definition."
+function expected_main_strut_drag(ac, para)
+    strut, Sw = ac.wing.strut, ac.wing.layout.S
+    Re_factor = (para[iaReunit] * strut.chord / para[iaRerefs])^para[iaaRexp]
+    return strut.S / Sw * (para[iacdfs] + para[iacdps] * strut.cos_lambda^3) * Re_factor * strut.local_velocity_ratio^3
+end
+
+"Strut profile drag coefficient of the two jury struts: vertical, unswept and without lift, from its definition."
+function expected_jury_drag(ac, para)
+    jury, Sw = ac.wing.jury, ac.wing.layout.S
+    Re_factor = (para[iaReunit] * jury.chord / para[iaRerefs])^para[iaaRexp]
+    return 2 * jury.chord * jury.length / Sw * (para[iacdfs] + para[iacdps]) * Re_factor *
+           ac.wing.strut.local_velocity_ratio^3
+end
+
 @testset "Trefftz surfaces" verbose=true begin
 
     @testset "Configuration without strut panels" begin
@@ -77,10 +150,10 @@ end
 
     @testset "Configuration with strut panels" begin
         # quality => (strut panels, points without strut, points with strut)
-        # The strut has the tail's total panel count: 10+2, 20+4 and 80+16 panels
-        cases = ("COARSE" => (12, 43, 56),
-                 "MEDIUM" => (24, 84, 109),
-                 "FINE"   => (96, 330, 427))
+        # The strut has halfway between the wing's and the tail's total panel count, rounded down
+        cases = ("COARSE" => (20, 43, 64),
+                 "MEDIUM" => (41, 84, 126),
+                 "FINE"   => (164, 330, 495))
         for (quality, (n_strut_panels, n_points_cantilever, n_points_braced)) in cases
             @testset "$quality" begin
                 config = trefftz_aero.get_trefftz_config(quality; braced = true)
@@ -100,11 +173,8 @@ end
                       trefftz_aero.n_points_used(trefftz_aero.get_trefftz_config(quality))
                 @test trefftz_aero.i_last_tail(config) == n_points_cantilever
 
-                # The strut and the tail have the same number of points
-                @test trefftz_aero.n_strut_points(config.strut_panels) ==
-                      trefftz_aero.i_last_tail(config) - trefftz_aero.i_first_tail(config) + 1
-                @test trefftz_aero.i_last_strut(config) - trefftz_aero.i_first_strut(config) ==
-                      trefftz_aero.i_last_tail(config) - trefftz_aero.i_first_tail(config)
+                # The strut has its panels plus one dummy point after it
+                @test trefftz_aero.n_strut_points(config.strut_panels) == n_strut_panels + 1
             end
         end
     end
@@ -113,7 +183,7 @@ end
         # FINE wing and tail use 330 of the points in the geometry arrays
         n_slots = length(trefftz_aero.TREFFTZ_GEOM.y)
         n_strut_panels_that_fit = n_slots - 330 - 1 # one more point is the dummy point after the strut
-        @test n_slots >= 427 # FINE with a strut
+        @test n_slots >= 495 # FINE with a strut
         wing_panels = trefftz_aero.SurfaceDiscretization(160, 48, 24)
         tail_panels = trefftz_aero.SurfaceDiscretization(80, 0, 16)
         config_with_strut(n_strut_panels) = trefftz_aero.TrefftzPlaneConfig(wing_panels, tail_panels;
@@ -131,12 +201,12 @@ end
         braced_config = trefftz_aero.get_trefftz_config("COARSE"; braced = true)
 
         @test trefftz_aero.calculate_array_size(cantilever_config, htail) == 43
-        @test trefftz_aero.calculate_array_size(braced_config, htail) == 56
+        @test trefftz_aero.calculate_array_size(braced_config, htail) == 64
 
         # With a T-tail the tail image panels (2 in COARSE) drop out, the strut block does not
         htail.layout.root_span = 0.0
         @test trefftz_aero.calculate_array_size(cantilever_config, htail) == 41
-        @test trefftz_aero.calculate_array_size(braced_config, htail) == 54
+        @test trefftz_aero.calculate_array_size(braced_config, htail) == 62
     end
 
     @testset "generate_trefftz_points_inclined!" begin
@@ -235,13 +305,13 @@ end
 
         # Both aircraft use COARSE, so the strut is the only difference between the two configurations
         @test trefftz_aero.n_points_used(braced_config) ==
-              trefftz_aero.n_points_used(ac_cantilever.options.trefftz_config) + 13
+              trefftz_aero.n_points_used(ac_cantilever.options.trefftz_config) + 21
 
         CDi_cantilever, span_efficiency_cantilever = trefftz_drag_for_test_case!(ac_cantilever)
         CDi_braced, span_efficiency_braced = trefftz_drag_for_test_case!(ac_braced)
 
-        @test length(ac_braced.wake_system.points) == 56
-        @test length(ac_braced.wake_system.elements) == 55
+        @test length(ac_braced.wake_system.points) == 64
+        @test length(ac_braced.wake_system.elements) == 63
         @test isfinite(CDi_braced) && CDi_braced > 0.0
         @test isfinite(span_efficiency_braced) && 0.0 < span_efficiency_braced <= 1.0
 
@@ -305,7 +375,7 @@ end
         # The wake geometry is cached on the geometry: the surface count must also trigger a rebuild
         CDi_cantilever, _ = trefftz_drag_for_test_case!(ac_cantilever)
         trefftz_drag_for_test_case!(ac_braced; reuse_cached_geometry = true)
-        @test length(ac_braced.wake_system.points) == 56
+        @test length(ac_braced.wake_system.points) == 64
         CDi_cantilever_again, _ = trefftz_drag_for_test_case!(ac_cantilever; reuse_cached_geometry = true)
         @test length(ac_cantilever.wake_system.points) == 43
         @test CDi_cantilever_again ≈ CDi_cantilever rtol = 1e-12
@@ -401,6 +471,262 @@ end
             CDi_shifted, span_efficiency_shifted = trefftz_drag_for_test_case!(ac; reuse_cached_geometry = true)
             @test CDi_shifted ≈ CDi rtol = 1e-12
             @test span_efficiency_shifted ≈ span_efficiency rtol = 1e-12
+        end
+    end
+
+    @testset "Cantilever induced drag ignores the strut lift input" begin
+        ac = load_aircraft_quietly()
+        set_strut_lift_inputs!(ac, 1.0)
+
+        CDi, span_efficiency = trefftz_drag_for_test_case!(ac)
+
+        @test CDi ≈ 0.05468605653459833 rtol = 1e-12
+        @test span_efficiency ≈ 0.8319732645252401 rtol = 1e-12
+        @test ac.wing.strut.CL == 0.0
+        @test ac.wing.strut.lift_fraction == 0.0
+    end
+
+    @testset "Strut lift inputs" begin
+        @testset "Defaults" begin
+            for ac in (load_braced_aircraft_quietly(), load_aircraft_quietly())
+                @test ac.wing.strut.cl_ratio == 0.0
+                @test ac.wing.strut.spanload_exponent == 0.0
+            end
+        end
+
+        @testset "Read from [Wing.Strut]" begin
+            path = joinpath(TASOPT.__TASOPTroot__, "../example/defaults/default_tbw.toml")
+            toml = replace(read(path, String),
+                r"(?m)^(\s*cl_ratio\s*=\s*)[^\s#]+" => s"\g<1>0.7",
+                r"(?m)^(\s*spanload_exponent\s*=\s*)[^\s#]+" => s"\g<1>0.8")
+            mktempdir() do dir
+                modified_path = joinpath(dir, "strut_lift.toml")
+                write(modified_path, toml)
+                strut = load_aircraft_quietly(modified_path).wing.strut
+                @test strut.cl_ratio == 0.7
+                @test strut.spanload_exponent == 0.8
+            end
+        end
+
+        @testset "No strut lift when cl_ratio is zero" begin
+            ac = load_braced_aircraft_quietly()
+            set_strut_lift_inputs!(ac, 0.0)
+            trefftz_drag_for_test_case!(ac)
+            @test ac.wing.strut.CL == 0.0
+            @test ac.wing.strut.lift_fraction == 0.0
+            i_strut = trefftz_aero.i_first_strut(ac.options.trefftz_config):trefftz_aero.i_last_strut(ac.options.trefftz_config)
+            @test all(==(0.0), trefftz_aero.gw[i_strut])
+        end
+    end
+
+    @testset "Strut carries lift in addition to the wing" begin
+        CL, CLhtail = 1.2, 0.05 * 25.0 / 125.0 # CL and tail CL referenced to the wing area, as in set_trefftz_test_case!
+        cl_ratio, spanload_exponent = 1.0, 0.5
+
+        ac_no_lift = load_braced_aircraft_quietly()
+        set_strut_lift_inputs!(ac_no_lift, 0.0)
+        CDi_no_lift, _ = trefftz_drag_for_test_case!(ac_no_lift)
+
+        ac = load_braced_aircraft_quietly()
+        set_strut_lift_inputs!(ac, cl_ratio; spanload_exponent)
+        CDi, span_efficiency = trefftz_drag_for_test_case!(ac)
+        config = ac.options.trefftz_config
+        strut = ac.wing.strut
+        geom = trefftz_aero.TREFFTZ_GEOM
+        i_first, i_last = trefftz_aero.i_first_strut(config), trefftz_aero.i_last_strut(config)
+
+        @testset "Strut lift coefficient" begin
+            CL_strut = cl_ratio * (strut.S / ac.wing.layout.S) * strut.local_velocity_ratio^2 * (CL - CLhtail)
+            @test CL_strut > 0.0
+            @test strut.CL ≈ CL_strut rtol = 1e-12
+            @test strut.lift_fraction ≈ CL_strut / CL rtol = 1e-12
+
+            # The strut lift is added to the wing's own lift: the wing target is reduced and the total stays CL
+            strut_lift = trefftz_surface_lift(ac, i_first, i_last)
+            wing_lift = trefftz_surface_lift(ac, trefftz_aero.i_first_wing(config), trefftz_aero.i_last_wing(config))
+            tail_lift = trefftz_surface_lift(ac, trefftz_aero.i_first_tail(config), trefftz_aero.i_last_tail(config))
+            @test strut_lift ≈ CL_strut rtol = 1e-10
+            @test tail_lift ≈ CLhtail rtol = 1e-10
+            @test wing_lift ≈ CL - CLhtail - CL_strut rtol = 1e-10
+            @test wing_lift + tail_lift + strut_lift ≈ CL rtol = 1e-10
+        end
+
+        @testset "Strut circulation shape" begin
+            n = trefftz_aero.n_total(config.strut_panels)
+            gc = geom.gc[i_first:(i_last - 1)]
+            # Each strut is half a wing: ξ = 0 at the fuselage (like a wing root) and ξ = 1 at the wing attachment
+            ξ = [(k - 0.5) / n for k in 1:n]
+            shape = (1 .- ξ .^ 2) .^ spanload_exponent
+
+            # The loading is largest at the fuselage end; no tip vortex where the strut is attached to the wing
+            @test gc[1] > 0.0
+            @test gc[end] == 0.0
+            @test all(>(0.0), gc[1:(end - 1)])
+
+            # Up to the last panel the circulation follows (1-ξ²)^p and decreases from the fuselage to the wing
+            @test gc[1:(end - 1)] ./ gc[1] ≈ shape[1:(end - 1)] ./ shape[1] rtol = 1e-10
+            @test all(diff(gc[1:(end - 1)]) .< 0.0)
+
+            # The wake circulation vanishes at both strut ends (no vortex at the fuselage centreline, where the left
+            # and right strut cancel, and none at the wing attachment); the interior values telescope, so the net
+            # strength equals the loading of the first panel
+            gw = trefftz_aero.gw[i_first:i_last]
+            @test gw[1] == 0.0
+            @test gw[end] == 0.0
+            @test sum(gw) ≈ gc[1] rtol = 1e-10
+        end
+
+        @testset "Induced drag" begin
+            @test isfinite(CDi) && CDi > 0.0
+            @test isfinite(span_efficiency) && span_efficiency > 0.0
+            # The strut takes about 8 % of the lift from the wing (CL_strut / CL), which changes the induced drag by
+            # several percent; 1e-3 is far above rounding and well below that change.
+            @test abs(CDi - CDi_no_lift) / CDi_no_lift > 1e-3
+        end
+    end
+
+    @testset "Strut circulation is rebuilt when its inputs change on cached geometry" begin
+        function strut_circulation(ac)
+            config = ac.options.trefftz_config
+            return copy(trefftz_aero.TREFFTZ_GEOM.gc[trefftz_aero.i_first_strut(config):(trefftz_aero.i_last_strut(config) - 1)])
+        end
+
+        @testset "spanload_exponent" begin
+            ac = load_braced_aircraft_quietly()
+            set_strut_lift_inputs!(ac, 1.0; spanload_exponent = 0.5)
+            trefftz_drag_for_test_case!(ac)
+            gc_elliptic = strut_circulation(ac)
+
+            ac.wing.strut.spanload_exponent = 1.0
+            CDi_updated, _ = trefftz_drag_for_test_case!(ac; reuse_cached_geometry = true)
+            gc_updated = strut_circulation(ac)
+            @test !isapprox(gc_updated, gc_elliptic; rtol = 1e-3)
+
+            # The result is the one of a wake built from scratch with the new exponent
+            CDi_fresh, _ = trefftz_drag_for_test_case!(ac)
+            @test CDi_updated ≈ CDi_fresh rtol = 1e-12
+            @test gc_updated ≈ strut_circulation(ac) rtol = 1e-12
+        end
+
+        @testset "cl_ratio from zero" begin
+            ac = load_braced_aircraft_quietly()
+            set_strut_lift_inputs!(ac, 0.0)
+            trefftz_drag_for_test_case!(ac)
+
+            ac.wing.strut.cl_ratio = 1.0
+            CDi_updated, _ = trefftz_drag_for_test_case!(ac; reuse_cached_geometry = true)
+            @test ac.wing.strut.CL > 0.0
+            CDi_fresh, _ = trefftz_drag_for_test_case!(ac)
+            @test CDi_updated ≈ CDi_fresh rtol = 1e-12
+        end
+    end
+
+    @testset "Strut profile drag" begin
+        function strut_drag_case(config)
+            ac = load_braced_aircraft_quietly()
+            ac.options.opt_wing_config = config
+            para = set_strut_drag_test_case!(ac)
+            return ac, para
+        end
+
+        @testset "Strut-braced wing: strut only, with Reynolds number scaling" begin
+            ac, para = strut_drag_case(WingConfig.StrutBraced)
+            expected = expected_main_strut_drag(ac, para)
+            para = strut_drag_for_test_case!(ac)
+            @test expected > 0
+            @test para[iaCDstrut] ≈ expected rtol = 1e-12
+        end
+
+        @testset "Reynolds number scaling follows Reunit, Rerefs and the strut chord" begin
+            ac, para = strut_drag_case(WingConfig.StrutBraced)
+            CDstrut = strut_drag_for_test_case!(ac)[iaCDstrut]
+            aRexp = para[iaaRexp]
+
+            para[iaRerefs] *= 2
+            @test strut_drag_for_test_case!(ac)[iaCDstrut] ≈ CDstrut * 2.0^(-aRexp) rtol = 1e-12
+            para[iaRerefs] /= 2
+
+            para[iaReunit] *= 2
+            @test strut_drag_for_test_case!(ac)[iaCDstrut] ≈ CDstrut * 2.0^aRexp rtol = 1e-12
+            para[iaReunit] /= 2
+
+            ac.wing.strut.chord *= 2
+            @test strut_drag_for_test_case!(ac)[iaCDstrut] ≈ CDstrut * 2.0^aRexp rtol = 1e-12
+        end
+
+        @testset "Truss-braced wing adds the jury strut drag to the strut drag" begin
+            ac, para = strut_drag_case(WingConfig.TrussBraced)
+            expected_strut = expected_main_strut_drag(ac, para)
+            expected_jury = expected_jury_drag(ac, para)
+            para = strut_drag_for_test_case!(ac)
+            @test expected_jury > 0
+            @test para[iaCDstrut] ≈ expected_strut + expected_jury rtol = 1e-12
+
+            # The jury drag is part of the total drag
+            ac_strut, _ = strut_drag_case(WingConfig.StrutBraced)
+            para_strut = strut_drag_for_test_case!(ac_strut)
+            @test para[iaCD] - para_strut[iaCD] ≈ expected_jury rtol = 1e-9
+        end
+
+        @testset "Jury strut drag uses the jury chord, length and the strut Reynolds number scaling" begin
+            ac, para = strut_drag_case(WingConfig.TrussBraced)
+            CDjury = strut_drag_for_test_case!(ac)[iaCDstrut] - expected_main_strut_drag(ac, para)
+            aRexp = para[iaaRexp]
+
+            ac.wing.jury.length *= 2
+            CDjury_long = strut_drag_for_test_case!(ac)[iaCDstrut] - expected_main_strut_drag(ac, para)
+            @test CDjury_long ≈ 2 * CDjury rtol = 1e-9
+
+            ac.wing.jury.length /= 2
+            para[iaRerefs] *= 2
+            CDjury_rerefs = strut_drag_for_test_case!(ac)[iaCDstrut] - expected_main_strut_drag(ac, para)
+            @test CDjury_rerefs ≈ CDjury * 2.0^(-aRexp) rtol = 1e-9
+        end
+
+        @testset "Unsized strut or jury gives zero drag, not NaN" begin
+            ac, para = strut_drag_case(WingConfig.TrussBraced)
+            expected_strut = expected_main_strut_drag(ac, para)
+            expected_jury = expected_jury_drag(ac, para)
+
+            ac.wing.jury.chord = 0.0
+            para = strut_drag_for_test_case!(ac)
+            @test para[iaCDstrut] ≈ expected_strut rtol = 1e-12
+            @test isfinite(para[iaCD])
+
+            ac.wing.jury.chord = 0.4
+            ac.wing.jury.length = 0.0
+            @test strut_drag_for_test_case!(ac)[iaCDstrut] ≈ expected_strut rtol = 1e-12
+
+            ac.wing.jury.length = 2.5
+            ac.wing.strut.S = 0.0
+            para = strut_drag_for_test_case!(ac)
+            @test para[iaCDstrut] ≈ expected_jury rtol = 1e-12
+            @test isfinite(para[iaCD])
+
+            ac.wing.strut.S = 10.0
+            ac.wing.strut.chord = 0.0
+            @test strut_drag_for_test_case!(ac)[iaCDstrut] ≈ expected_jury rtol = 1e-12
+
+            ac.wing.jury.chord = 0.0
+            para = strut_drag_for_test_case!(ac)
+            @test para[iaCDstrut] == 0.0
+            @test isfinite(para[iaCD])
+        end
+
+        @testset "Cantilever wing has no strut drag" begin
+            ac = load_aircraft_quietly()
+            para = set_strut_drag_test_case!(ac)
+            para = strut_drag_for_test_case!(ac)
+            @test para[iaCDstrut] == 0.0
+            CD = para[iaCD]
+            @test isfinite(CD)
+
+            # Strut and jury inputs and the strut reference Reynolds number do not affect the cantilever drag
+            ac.wing.strut.S *= 2
+            ac.wing.strut.chord *= 2
+            ac.wing.jury.chord *= 2
+            para[iaRerefs] *= 2
+            @test strut_drag_for_test_case!(ac)[iaCD] ≈ CD rtol = 1e-12
         end
     end
 end
