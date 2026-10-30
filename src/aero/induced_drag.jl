@@ -63,7 +63,7 @@ function induced_drag!(para, ac, trefftz_config::TrefftzPlaneConfig)
     po[1] = 1.0
 
     #---- strut lift (zero without a strut surface)
-    CL_strut = strut_lift_coefficient(wing, trefftz_config, CL, CLhtail)
+    CL_strut = strut_lift_share(wing, trefftz_config) * (CL - CLhtail)
     wing.strut.CL = CL_strut
     wing.strut.lift_fraction = CL_strut / CL
 
@@ -113,16 +113,69 @@ function induced_drag!(para, ac, trefftz_config::TrefftzPlaneConfig)
 end # induced_drag!
 
 """
-    strut_lift_coefficient(wing, trefftz_config, CL, CLhtail)
+    strut_lift_share(wing, trefftz_config)
 
-Lift coefficient of both struts, referenced to the wing area: `cl_ratio` times the strut to wing area ratio, the
-square of the local velocity ratio of the strut and the lift coefficient carried by the wing and the strut, `CL - CLhtail`.
-Zero if `trefftz_config` has no strut surface.
+Share of the lift carried by the wing and the strut, `CL - CLhtail`, that is carried by both struts: `cl_ratio` times the
+strut to wing area ratio and the square of the local velocity ratio of the strut. Zero if `trefftz_config` has no
+strut surface.
 """
-function strut_lift_coefficient(wing, trefftz_config::TrefftzPlaneConfig, CL, CLhtail)
+function strut_lift_share(wing, trefftz_config::TrefftzPlaneConfig)
     n_surfaces(trefftz_config) == 3 || return 0.0
     strut = wing.strut
-    return strut.cl_ratio * (strut.S / wing.layout.S) * strut.local_velocity_ratio^2 * (CL - CLhtail)
+    return strut.cl_ratio * (strut.S / wing.layout.S) * strut.local_velocity_ratio^2
+end
+
+"""
+    strut_lift_arm(wing)
+
+Streamwise offset of the lift centre of the strut from the wing box [m], with the sign convention of the wing lift arm
+`co * CMw1` in [`balance_aircraft!`](@ref): the lift acts at `xwbox - arm`, so a lift centre aft of the wing box has a
+negative arm. The lift acts at the spanwise centroid of the strut loading ``(1-\\xi^2)^p`` with ``p`` = `wing.strut.spanload_exponent` (see [`set_strut_circulation_shape!`](@ref)), between the
+strut root `wing.strut.y_root` (``\\xi = 0``) and the attachment at the wing break (``\\xi = 1``). The centroid is
+``\\xi_{cp} = \\int_0^1 \\xi (1-\\xi^2)^p d\\xi / \\int_0^1 (1-\\xi^2)^p d\\xi
+= \\Gamma(p+3/2) / (\\sqrt{\\pi}\\,(p+1)\\,\\Gamma(p+1))``.
+
+The strut is assumed to lie under the wing box axis, which is swept back by `wing.layout.sweep`, so a strut lift centre
+at the spanwise position `y_cp` is `y_cp tan(sweep)` aft of the wing box root. The chordwise offset of the strut from
+the wing box and the pitching moment of the strut section (symmetric section) are neglected.
+"""
+function strut_lift_arm(wing)
+    strut = wing.strut
+    p = strut.spanload_exponent
+    ξ_cp = exp(log_gamma(p + 1.5) - log_gamma(p + 1.0)) / (sqrt(pi) * (p + 1.0))
+    y_attach = 0.5 * wing.layout.break_span
+    y_cp = strut.y_root + (y_attach - strut.y_root) * ξ_cp
+    return -tand(wing.layout.sweep) * y_cp
+end
+
+"""
+    strut_blended_lift_arm(co_CMw1, wing, trefftz_config)
+
+Offset of the lift centre of the wing and the strut from the wing box [m], with the sign convention of
+[`strut_lift_arm`](@ref): the wing lift arm `co_CMw1` (the wing root chord times `CMw1`) and the
+[`strut_lift_arm`](@ref) weighted by the [`strut_lift_share`](@ref). Returns `co_CMw1` unchanged if the strut carries
+no lift.
+"""
+function strut_blended_lift_arm(co_CMw1, wing, trefftz_config::TrefftzPlaneConfig)
+    k = strut_lift_share(wing, trefftz_config)
+    k == 0.0 && return co_CMw1
+    return (1.0 - k) * co_CMw1 + k * strut_lift_arm(wing)
+end
+
+"""
+    log_gamma(x)
+
+Natural logarithm of the gamma function for `x > 0`. The argument is shifted up to at least 15 with
+``\\Gamma(x+1) = x\\Gamma(x)``, where the Stirling series with four terms is accurate to about 1e-14.
+"""
+function log_gamma(x)
+    log_product = 0.0
+    while x < 15.0
+        log_product += log(x)
+        x += 1.0
+    end
+    return (x - 0.5) * log(x) - x + 0.5 * log(2.0 * pi) +
+           1.0 / (12.0 * x) - 1.0 / (360.0 * x^3) + 1.0 / (1260.0 * x^5) - 1.0 / (1680.0 * x^7) - log_product
 end
 
 """
