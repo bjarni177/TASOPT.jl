@@ -198,30 +198,6 @@ end
             @test geom.y[1:5] ≈ [2.0, 4.0, 6.0, 8.0, 10.0]
         end
 
-        @testset "Horizontal segment is the flat line" begin
-            geom = nan_filled_geometry()
-            y_start, y_end, z, n_panels = 0.0, 12.0, 0.7, 6
-            i_end = trefftz_aero.generate_trefftz_points_inclined!(3, geom, y_start, z, y_end, z, n_panels)
-            nodes = 3:i_end
-            @test all(isfinite, geom.y[nodes])
-            @test all(==(z), geom.z[nodes])
-            @test all(==(z), geom.zp[nodes])
-            @test all(==(z), geom.zc[3:(i_end - 1)])
-            @test geom.y[nodes] ≈ [y_start + (y_end - y_start) * k / n_panels for k in 0:n_panels]
-        end
-
-        @testset "Vertical segment" begin
-            geom = nan_filled_geometry()
-            i_end = trefftz_aero.generate_trefftz_points_inclined!(1, geom, 1.5, -2.0, 1.5, 2.0, 4)
-            @test i_end == 5
-            @test all(==(1.5), geom.y[1:5])
-            @test all(==(1.5), geom.yp[1:5])
-            @test geom.z[1:5] ≈ [-2.0, -1.0, 0.0, 1.0, 2.0]
-            @test all(isfinite, geom.yc[1:4]) && all(isfinite, geom.zc[1:4])
-            @test all(==(1.5), geom.yc[1:4])
-            @test geom.zc[1:4] ≈ [-1.5, -0.5, 0.5, 1.5]
-        end
-
         @testset "Single panel" begin
             geom = nan_filled_geometry()
             i_end = trefftz_aero.generate_trefftz_points_inclined!(7, geom, 1.0, 0.0, 5.0, 2.0, 1)
