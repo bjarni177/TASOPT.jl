@@ -26,7 +26,7 @@ Configuration for Trefftz plane induced drag analysis.
 Contains both panel discretization and analysis constants/ parameters.
 The surfaces are ordered wing, tail, strut. The strut is only part of the analysis when `strut_panels`
 has panels; by default it has none and the analysis has two surfaces. [`get_trefftz_config`](@ref) gives
-the strut as many points as the tail.
+the strut halfway between the panel counts of the wing and the tail.
 
 # Example
 ```julia
@@ -132,9 +132,9 @@ Create a [`TrefftzPlaneConfig`](@ref).
 !!! details "🔃 Inputs and Outputs"
     **Inputs:**
     - `quality::String`: Discretization quality level ("COARSE", "MEDIUM", or "FINE").
-    - `braced::Bool=false`: If `true`, the strut is included as a third surface with as many panels as the tail
-      (12, 24 or 96 for "COARSE", "MEDIUM" or "FINE"), all laid out along the strut. If `false`, the analysis has
-      the wing and tail only.
+    - `braced::Bool=false`: If `true`, the strut is included as a third surface with halfway between the total panel
+      counts of the wing and the tail, rounded down (20, 41 or 164 for "COARSE", "MEDIUM" or "FINE"), all laid out
+      along the strut. If `false`, the analysis has the wing and tail only.
     - `k_tip::Float64=16.0`: Tip loading exponent (controls circulation decay at wing tips).
     - `bunch::Float64=0.5`: Center clustering factor ∈ \\[0,1\\] (controls spanwise panel spacing near root).
     - `wing_root_contraction::Float64=0.2`: Wing root streamline contraction factor (stream tube contraction near fuselage).
@@ -175,8 +175,9 @@ function get_trefftz_config(quality::String;
         throw(ArgumentError("Invalid discretization resolution: $quality. Must be 'COARSE', 'MEDIUM', or 'FINE'."))
     end
 
-    # The strut has no fuselage image region, so it gets the tail's total panel count as ordinary panels
-    strut_panels = braced ? SurfaceDiscretization(n_total(tail_panels), 0, 0) : SurfaceDiscretization(0, 0, 0)
+    # The strut has no fuselage image region, so its panels are all ordinary panels
+    n_strut_panels = div(n_total(wing_panels) + n_total(tail_panels), 2)
+    strut_panels = braced ? SurfaceDiscretization(n_strut_panels, 0, 0) : SurfaceDiscretization(0, 0, 0)
 
     return TrefftzPlaneConfig(wing_panels, tail_panels;
                              k_tip=k_tip,
