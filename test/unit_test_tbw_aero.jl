@@ -585,6 +585,27 @@ end
         end
     end
 
+    @testset "Strut-braced induced drag differs from the same-span cantilever" begin
+        # Same wing span, area and tail: the strut surface is the only difference. With strut lift, its wake interferes
+        # with the wing and tail wakes, so the Trefftz-plane drag must change relative to the cantilever.
+        ac_cantilever = load_aircraft_quietly()
+        CDi_cantilever, span_efficiency_cantilever = trefftz_drag_for_test_case!(ac_cantilever)
+
+        ac_braced = load_braced_aircraft_quietly()
+        set_strut_lift_inputs!(ac_braced, 1.0)
+        CDi_braced, span_efficiency_braced = trefftz_drag_for_test_case!(ac_braced)
+
+        @test ac_braced.wing.layout.span == ac_cantilever.wing.layout.span
+        @test ac_braced.wing.layout.S == ac_cantilever.wing.layout.S
+        @test ac_braced.wing.strut.lift_fraction > 0.0
+        @test isfinite(CDi_braced) && CDi_braced > 0.0
+
+        # The strut takes about 8 % of the lift, which raises CDi by about 14 % (span efficiency drops from 0.83 to 0.73)
+        # because the strut's own, short-span loading is inefficient; 5 % is far above rounding and below that change.
+        @test abs(CDi_braced - CDi_cantilever) / CDi_cantilever > 0.05
+        @test abs(span_efficiency_braced - span_efficiency_cantilever) / span_efficiency_cantilever > 0.05
+    end
+
     @testset "Strut circulation is rebuilt when its inputs change on cached geometry" begin
         function strut_circulation(ac)
             config = ac.options.trefftz_config
