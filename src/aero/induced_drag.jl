@@ -99,14 +99,16 @@ end # induced_drag!
     ensure_trefftz_current!(ac, po, gammat, gammas, trefftz_config)
 
 Checks if the Trefftz plane geometry is up-to-date with the current wing and tail geometry
-(and, if the configuration has a strut surface, the strut geometry). If not, rebuilds the geometry.
+(spans, root spans, break locations, taper ratios and the heights `layout.z` of the wing and tail points
+in the wake) and, if the configuration has a strut surface, the strut geometry. If not, rebuilds the geometry.
 """
 function ensure_trefftz_current!(ac, po, gammat, gammas, trefftz_config)
     wing = ac.wing
     htail = ac.htail
 
     geometry = (wing.layout.span, wing.layout.root_span, wing.layout.ηs,
-        htail.layout.span, htail.layout.root_span, htail.layout.ηs, gammat..., gammas...)
+        htail.layout.span, htail.layout.root_span, htail.layout.ηs, wing.layout.z, htail.layout.z,
+        gammat..., gammas...)
     if n_surfaces(trefftz_config) == 3
         geometry = (geometry..., wing.strut.y_root, wing.strut.z)
     end
@@ -458,14 +460,56 @@ This is an incremental refactoring step - extracted from _trefftz_analysis for c
 end
 
 """
+    generate_trefftz_points_inclined!(i_start::Int, geom::TrefftzGeometry,
+    y_start, z_start, y_end, z_end, n_panels::Int) -> i_end::Int
+
+Generate field points and control points for a zero-lift line in the Trefftz plane, evenly spaced along the
+straight segment from (`y_start`, `z_start`) to (`y_end`, `z_end`). Returns the final index after point generation.
+
+The `n_panels + 1` field points start at index `i_start`. Each control point is at the midpoint of two consecutive
+field points. The circulation `gc` is zero and the wake is not contracted (`yp = y`, `zp = z`).
+"""
+function generate_trefftz_points_inclined!(
+    i_start::Int,
+    geom::TrefftzGeometry,
+    y_start, z_start,
+    y_end, z_end,
+    n_panels::Int
+)
+    i = i_start
+    geom.y[i] = y_start
+    geom.yp[i] = y_start
+    geom.z[i] = z_start
+    geom.zp[i] = z_start
+
+    @inbounds for k = 1:n_panels
+        i = i + 1
+        geom.y[i] = y_start + (y_end - y_start) * k / n_panels
+        geom.yp[i] = geom.y[i]
+        geom.z[i] = z_start + (z_end - z_start) * k / n_panels
+        geom.zp[i] = geom.z[i]
+
+        geom.yc[i-1] = 0.5 * (geom.y[i-1] + geom.y[i])
+        geom.ycp[i-1] = geom.yc[i-1]
+        geom.zc[i-1] = 0.5 * (geom.z[i-1] + geom.z[i])
+        geom.zcp[i-1] = geom.zc[i-1]
+        geom.gc[i-1] = 0.0
+    end
+
+    return i
+end
+
+"""
     generate_strut_points!(i_start::Int, geom::TrefftzGeometry, wing, panels::SurfaceDiscretization) -> i_end::Int
 
 Generate field points and control points for the strut in the Trefftz plane. Returns the final index
 after point generation.
 
-Placeholder geometry: the points are evenly spaced along a straight line at constant height `wing.strut.z`,
-from the strut root `wing.strut.y_root` to the strut attachment at the wing break (`ηs b/2`). The strut carries
-no lift, so its circulation `gc` is zero and the wake is not contracted (`yp = y`).
+The points are evenly spaced along the straight line (see [`generate_trefftz_points_inclined!`](@ref)) from the
+strut root at the fuselage, at lateral position `wing.strut.y_root` and a height `wing.strut.z` below the wing box
+(`wing.layout.z - wing.strut.z`), to the strut attachment at the wing break (`ηs b/2`), at the height of the
+wing box `wing.layout.z`. The strut carries no lift, so its circulation `gc` is zero and the wake is not
+contracted (`yp = y`).
 """
 function generate_strut_points!(
     i_start::Int,
@@ -473,32 +517,11 @@ function generate_strut_points!(
     wing,
     panels::SurfaceDiscretization
 )
-    y_root = wing.strut.y_root
-    y_attach = 0.5 * wing.layout.break_span
-    z = wing.strut.z
-    n_panels = n_total(panels)
-
-    i = i_start
-    geom.y[i] = y_root
-    geom.yp[i] = y_root
-    geom.z[i] = z
-    geom.zp[i] = z
-
-    @inbounds for k = 1:n_panels
-        i = i + 1
-        geom.y[i] = y_root + (y_attach - y_root) * k / n_panels
-        geom.yp[i] = geom.y[i]
-        geom.z[i] = z
-        geom.zp[i] = z
-
-        geom.yc[i-1] = 0.5 * (geom.y[i-1] + geom.y[i])
-        geom.ycp[i-1] = geom.yc[i-1]
-        geom.zc[i-1] = z
-        geom.zcp[i-1] = z
-        geom.gc[i-1] = 0.0
-    end
-
-    return i
+    return generate_trefftz_points_inclined!(
+        i_start, geom,
+        wing.strut.y_root, wing.layout.z - wing.strut.z,
+        0.5 * wing.layout.break_span, wing.layout.z,
+        n_total(panels))
 end
 
 """
