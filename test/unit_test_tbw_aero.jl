@@ -139,6 +139,102 @@ end
         @test trefftz_aero.calculate_array_size(braced_config, htail) == 54
     end
 
+    @testset "generate_trefftz_points_inclined!" begin
+        # Fill the arrays with NaN so that any entry the function must not touch is detected
+        function nan_filled_geometry()
+            geom = trefftz_aero.TrefftzGeometry{40}()
+            for name in (:t, :y, :yp, :z, :zp, :yc, :ycp, :zc, :zcp, :gc)
+                fill!(getfield(geom, name), NaN)
+            end
+            return geom
+        end
+
+        @testset "Rising segment starting at an offset index" begin
+            geom = nan_filled_geometry()
+            i_start, n_panels = 5, 8
+            y_start, z_start, y_end, z_end = 0.5, -1.4, 21.3, 1.7
+            i_end = trefftz_aero.generate_trefftz_points_inclined!(
+                i_start, geom, y_start, z_start, y_end, z_end, n_panels)
+
+            @test i_end == i_start + n_panels
+            nodes = i_start:i_end
+            controls = i_start:(i_end - 1)
+
+            @test geom.y[i_start] == y_start
+            @test geom.z[i_start] == z_start
+            @test geom.y[i_end] ≈ y_end rtol = 1e-14
+            @test geom.z[i_end] ≈ z_end rtol = 1e-14
+
+            # Evenly spaced and collinear
+            @test all(isapprox.(diff(geom.y[nodes]), (y_end - y_start) / n_panels; rtol = 1e-12))
+            slope = (z_end - z_start) / (y_end - y_start)
+            @test all(isapprox.(diff(geom.z[nodes]) ./ diff(geom.y[nodes]), slope; rtol = 1e-12))
+            @test all(isapprox.(geom.z[nodes], z_start .+ slope .* (geom.y[nodes] .- y_start); atol = 1e-12))
+
+            # No wake contraction
+            @test geom.yp[nodes] == geom.y[nodes]
+            @test geom.zp[nodes] == geom.z[nodes]
+
+            # Control points are the midpoints of consecutive nodes, and the strut carries no circulation
+            @test geom.yc[controls] ≈ 0.5 .* (geom.y[i_start:(i_end - 1)] .+ geom.y[(i_start + 1):i_end])
+            @test geom.zc[controls] ≈ 0.5 .* (geom.z[i_start:(i_end - 1)] .+ geom.z[(i_start + 1):i_end])
+            @test geom.ycp[controls] == geom.yc[controls]
+            @test geom.zcp[controls] == geom.zc[controls]
+            @test all(==(0.0), geom.gc[controls])
+
+            # Nothing outside the strut nodes (and the control points between them) is written
+            @test all(isnan, geom.y[1:(i_start - 1)])
+            @test all(isnan, geom.y[(i_end + 1):end])
+            @test all(isnan, geom.yc[1:(i_start - 1)])
+            @test all(isnan, geom.yc[i_end:end])
+            @test all(isnan, geom.gc[i_end:end])
+        end
+
+        @testset "Falling segment" begin
+            geom = nan_filled_geometry()
+            i_end = trefftz_aero.generate_trefftz_points_inclined!(1, geom, 2.0, 3.0, 10.0, -1.0, 4)
+            @test i_end == 5
+            @test geom.z[1:5] ≈ [3.0, 2.0, 1.0, 0.0, -1.0]
+            @test geom.y[1:5] ≈ [2.0, 4.0, 6.0, 8.0, 10.0]
+        end
+
+        @testset "Horizontal segment is the flat line" begin
+            geom = nan_filled_geometry()
+            y_start, y_end, z, n_panels = 0.0, 12.0, 0.7, 6
+            i_end = trefftz_aero.generate_trefftz_points_inclined!(3, geom, y_start, z, y_end, z, n_panels)
+            nodes = 3:i_end
+            @test all(isfinite, geom.y[nodes])
+            @test all(==(z), geom.z[nodes])
+            @test all(==(z), geom.zp[nodes])
+            @test all(==(z), geom.zc[3:(i_end - 1)])
+            @test geom.y[nodes] ≈ [y_start + (y_end - y_start) * k / n_panels for k in 0:n_panels]
+        end
+
+        @testset "Vertical segment" begin
+            geom = nan_filled_geometry()
+            i_end = trefftz_aero.generate_trefftz_points_inclined!(1, geom, 1.5, -2.0, 1.5, 2.0, 4)
+            @test i_end == 5
+            @test all(==(1.5), geom.y[1:5])
+            @test all(==(1.5), geom.yp[1:5])
+            @test geom.z[1:5] ≈ [-2.0, -1.0, 0.0, 1.0, 2.0]
+            @test all(isfinite, geom.yc[1:4]) && all(isfinite, geom.zc[1:4])
+            @test all(==(1.5), geom.yc[1:4])
+            @test geom.zc[1:4] ≈ [-1.5, -0.5, 0.5, 1.5]
+        end
+
+        @testset "Single panel" begin
+            geom = nan_filled_geometry()
+            i_end = trefftz_aero.generate_trefftz_points_inclined!(7, geom, 1.0, 0.0, 5.0, 2.0, 1)
+            @test i_end == 8
+            @test (geom.y[7], geom.z[7]) == (1.0, 0.0)
+            @test (geom.y[8], geom.z[8]) == (5.0, 2.0)
+            @test (geom.yc[7], geom.zc[7]) == (3.0, 1.0)
+            @test (geom.ycp[7], geom.zcp[7]) == (3.0, 1.0)
+            @test geom.gc[7] == 0.0
+            @test isnan(geom.yc[8]) && isnan(geom.gc[8])
+        end
+    end
+
     @testset "Cantilever induced drag is unchanged" begin
         ac = load_aircraft_quietly()
         @test trefftz_aero.n_surfaces(ac.options.trefftz_config) == 2
@@ -181,9 +277,49 @@ end
         i_strut = trefftz_aero.i_first_strut(braced_config):(trefftz_aero.i_last_strut(braced_config) - 1)
         @test all(==(0.0), trefftz_aero.TREFFTZ_GEOM.gc[i_strut])
 
-        # Placeholder strut is a flat line: constant z
-        strut_z = [ac_braced.wake_system.points[i][2] for i in i_strut]
-        @test all(==(first(strut_z)), strut_z)
+    end
+
+    @testset "Strut is an inclined straight line from the fuselage to the wing" begin
+        ac = load_braced_aircraft_quietly()
+        config = ac.options.trefftz_config
+        trefftz_drag_for_test_case!(ac)
+        wing = ac.wing
+        @test wing.strut.z > 0.0
+
+        i_nodes = trefftz_aero.i_first_strut(config):trefftz_aero.i_last_strut(config)
+        strut_y = [ac.wake_system.points[i][1] for i in i_nodes]
+        strut_z = [ac.wake_system.points[i][2] for i in i_nodes]
+        @test length(i_nodes) == trefftz_aero.n_total(config.strut_panels) + 1
+
+        # Fuselage attachment is strut.z below the wing box; the wing attachment is at the wing height
+        @test strut_y[1] == wing.strut.y_root
+        @test strut_z[1] ≈ wing.layout.z - wing.strut.z rtol = 1e-14
+        @test strut_y[end] ≈ 0.5 * wing.layout.break_span rtol = 1e-14
+        @test strut_z[end] ≈ wing.layout.z rtol = 1e-14
+
+        # The strut rises towards the wing along a line of constant slope
+        @test all(diff(strut_y) .> 0.0)
+        @test all(diff(strut_z) .> 0.0)
+        slope = (strut_z[end] - strut_z[1]) / (strut_y[end] - strut_y[1])
+        @test all(isapprox.(diff(strut_z) ./ diff(strut_y), slope; rtol = 1e-10))
+    end
+
+    @testset "Inclined strut elements have finite influence coefficients" begin
+        ac = load_braced_aircraft_quietly()
+        config = ac.options.trefftz_config
+        trefftz_drag_for_test_case!(ac)
+        influence_matrix = ac.wake_system.influence_matrix
+
+        n_points = trefftz_aero.n_points_used(config)
+        @test size(influence_matrix) == (n_points - 1, n_points)
+        @test all(isfinite, influence_matrix)
+
+        # Strut control points are rows of the strut block; the strut wake points are columns of it
+        i_strut_elements = trefftz_aero.i_first_strut(config):(trefftz_aero.i_last_strut(config) - 1)
+        i_strut_points = trefftz_aero.i_first_strut(config):trefftz_aero.i_last_strut(config)
+        @test all(isfinite, influence_matrix[i_strut_elements, :])
+        @test all(isfinite, influence_matrix[:, i_strut_points])
+        @test any(!=(0.0), influence_matrix[i_strut_elements, :])
     end
 
     @testset "Switching between two and three surfaces on unchanged geometry" begin
@@ -197,5 +333,98 @@ end
         CDi_cantilever_again, _ = trefftz_drag_for_test_case!(ac_cantilever; reuse_cached_geometry = true)
         @test length(ac_cantilever.wake_system.points) == 43
         @test CDi_cantilever_again ≈ CDi_cantilever rtol = 1e-12
+    end
+
+    @testset "Wake geometry is rebuilt only when the geometry changes" begin
+        wake_points(ac, i_points) = [ac.wake_system.points[i] for i in i_points]
+        all_at_height(points, z) = all(point -> isapprox(point[2], z; atol = 1e-12), points)
+
+        @testset "Braced aircraft: strut and wing height" begin
+            ac = load_braced_aircraft_quietly()
+            config = ac.options.trefftz_config
+            wing = ac.wing
+            para = set_trefftz_test_case!(ac)
+            i_wing = trefftz_aero.i_first_wing(config):trefftz_aero.i_last_wing(config)
+            i_strut = trefftz_aero.i_first_strut(config):trefftz_aero.i_last_strut(config)
+
+            trefftz_aero.TREFFTZ_GEOMETRY_HASH[] = UInt64(0)
+            trefftz_aero.induced_drag!(para, ac, config)
+
+            # Unchanged geometry keeps the wake system
+            wake_system = ac.wake_system
+            trefftz_aero.induced_drag!(para, ac, config)
+            @test ac.wake_system === wake_system
+
+            # Each change is made on top of the previous state, without resetting the cached geometry
+            changes = (
+                "strut.y_root" => () -> wing.strut.y_root += 0.2,
+                "strut.z"      => () -> wing.strut.z += 0.1,
+                "layout.z"     => () -> wing.layout.z += 0.3,
+                "layout.ηs"    => () -> wing.layout.ηs += 0.05)
+            for (name, change!) in changes
+                @testset "$name" begin
+                    wake_system = ac.wake_system
+                    strut_before = wake_points(ac, i_strut)
+                    wing_before = wake_points(ac, i_wing)
+
+                    change!()
+                    trefftz_aero.induced_drag!(para, ac, config)
+                    strut_after = wake_points(ac, i_strut)
+                    wing_after = wake_points(ac, i_wing)
+
+                    @test ac.wake_system !== wake_system
+                    @test strut_after[1][1] == wing.strut.y_root
+                    @test strut_after[1][2] ≈ wing.layout.z - wing.strut.z rtol = 1e-14
+                    @test strut_after[end][1] ≈ 0.5 * wing.layout.break_span rtol = 1e-14
+                    @test strut_after[end][2] ≈ wing.layout.z rtol = 1e-14
+                    @test all_at_height(wing_after, wing.layout.z)
+                    @test strut_after != strut_before
+                    name == "layout.z" && @test wing_after != wing_before
+                end
+            end
+        end
+
+        @testset "Cantilever aircraft: wing and tail height" begin
+            for (name, surface_of) in ("wing" => ac -> ac.wing, "htail" => ac -> ac.htail)
+                @testset "$name.layout.z" begin
+                    ac = load_aircraft_quietly()
+                    config = ac.options.trefftz_config
+                    surface = surface_of(ac)
+                    para = set_trefftz_test_case!(ac)
+                    i_wing = trefftz_aero.i_first_wing(config):trefftz_aero.i_last_wing(config)
+                    i_tail = trefftz_aero.i_first_tail(config):trefftz_aero.i_last_tail(config)
+
+                    trefftz_aero.TREFFTZ_GEOMETRY_HASH[] = UInt64(0)
+                    trefftz_aero.induced_drag!(para, ac, config)
+                    wake_system = ac.wake_system
+                    CDi_before = para[iaCDi]
+
+                    surface.layout.z += 0.4
+                    trefftz_aero.induced_drag!(para, ac, config)
+
+                    @test ac.wake_system !== wake_system
+                    @test all_at_height(wake_points(ac, i_wing), ac.wing.layout.z)
+                    @test all_at_height(wake_points(ac, i_tail), ac.htail.layout.z)
+
+                    # The height difference between wing and tail changes the induced drag. The result
+                    # with the updated wake must be the one of a wake built from scratch.
+                    CDi_updated, span_efficiency_updated = para[iaCDi], para[iaspaneff]
+                    @test !isapprox(CDi_updated, CDi_before; rtol = 1e-4)
+                    trefftz_aero.TREFFTZ_GEOMETRY_HASH[] = UInt64(0)
+                    trefftz_aero.induced_drag!(para, ac, config)
+                    @test CDi_updated ≈ para[iaCDi] rtol = 1e-12
+                    @test span_efficiency_updated ≈ para[iaspaneff] rtol = 1e-12
+                end
+            end
+
+            # Moving the wing and the tail by the same height leaves the induced drag unchanged
+            ac = load_aircraft_quietly()
+            CDi, span_efficiency = trefftz_drag_for_test_case!(ac)
+            ac.wing.layout.z += 0.4
+            ac.htail.layout.z += 0.4
+            CDi_shifted, span_efficiency_shifted = trefftz_drag_for_test_case!(ac; reuse_cached_geometry = true)
+            @test CDi_shifted ≈ CDi rtol = 1e-12
+            @test span_efficiency_shifted ≈ span_efficiency rtol = 1e-12
+        end
     end
 end
