@@ -56,6 +56,46 @@
 
     end # end airfun
 
+    @testset "Airfoil database limits" begin
+        penalty = TASOPT.aerodynamics.airfoil_database_penalty
+        exceedances = TASOPT.aerodynamics.airfoil_database_exceedances
+        warn_outside = TASOPT.aerodynamics.warn_outside_airfoil_database
+
+        # Inside the table (c_l 0.4–0.9, t/c 0.09–0.145, M⟂ up to 0.81): no penalty, no exceedance
+        @test penalty(0.68, 0.12, airf) == 0.0
+        @test penalty(0.4, 0.09, airf) == 0.0
+        @test penalty(0.9, 0.145, airf) == 0.0
+        @test isempty(exceedances(0.68, 0.12, 0.75, airf))
+        @test isempty(exceedances(0.4, 0.09, 0.81, airf))
+
+        # Outside: 25 (t/c - bound)² for thickness, (c_l - bound)² for lift coefficient
+        @test penalty(0.68, 0.08, airf) ≈ 2.5e-3
+        @test penalty(0.68, 0.07, airf) ≈ 1.0e-2
+        @test penalty(0.68, 0.15, airf) ≈ 6.25e-4
+        @test penalty(0.95, 0.12, airf) ≈ 2.5e-3
+        @test penalty(0.3, 0.12, airf) ≈ 1.0e-2
+        @test penalty(0.95, 0.08, airf) ≈ 5.0e-3
+
+        # Exceeded bounds are listed in the order c_l, thickness, Mach; Mach has no penalty
+        @test exceedances(0.95, 0.12, 0.75, airf) == [:cl]
+        @test exceedances(0.68, 0.15, 0.75, airf) == [:thickness]
+        @test exceedances(0.68, 0.12, 0.85, airf) == [:Mach]
+        @test exceedances(0.3, 0.08, 0.85, airf) == [:cl, :thickness, :Mach]
+        @test penalty(0.68, 0.12, airf) == 0.0
+
+        # The warning is silent inside the table. Outside, it is one warning that names the penalty and
+        # `penalty_fraction`, and asks to be shown once per session (`maxlog = 1`).
+        @test_logs warn_outside(0.68, 0.12, 0.75, airf)
+        logs, _ = Test.collect_test_logs() do
+            warn_outside(0.68, 0.08, 0.85, airf)
+        end
+        @test length(logs) == 1
+        @test logs[1].level == Base.CoreLogging.Warn
+        @test occursin("penalty_fraction", logs[1].message)
+        @test occursin("once", logs[1].message)
+        @test Dict(logs[1].kwargs)[:maxlog] == 1
+    end
+
     #start wing_loading
     wing.layout.root_chord = 5.3938688126436549
     wing.layout.span = 35.486921629195265
@@ -128,6 +168,34 @@
     @test fort_cdpw ≈ wing_drag_components.CDpwing
     @test fort_CDwing ≈ wing_drag_components.CDwing
     @test fort_CDover ≈ wing_drag_components.CDover
+    @test wing_drag_components.penalty_fraction == 0.0
+
+    @testset "Wing profile drag outside the airfoil database" begin
+        toc_inboard = wing.inboard.cross_section.thickness_to_chord
+        toc_outboard = wing.outboard.cross_section.thickness_to_chord
+        function drag_for_thickness(toc)
+            wing.inboard.cross_section.thickness_to_chord = toc
+            wing.outboard.cross_section.thickness_to_chord = toc
+            # Each strip outside the table warns; keep the log output quiet
+            return Base.CoreLogging.with_logger(Base.CoreLogging.NullLogger()) do
+                TASOPT.aerodynamics.wing_profiledrag_direct(
+                    wing, γt, γs, Mach, CL, CLhtail, Reco, aRexp, rkSunsw, fexcdw, fduo, fdus, fdut)
+            end
+        end
+
+        inside = drag_for_thickness(0.12)
+        thin = drag_for_thickness(0.08)
+        thinner = drag_for_thickness(0.07)
+        wing.inboard.cross_section.thickness_to_chord = toc_inboard
+        wing.outboard.cross_section.thickness_to_chord = toc_outboard
+
+        @test inside.penalty_fraction == 0.0
+        @test 0.0 < thin.penalty_fraction < thinner.penalty_fraction < 1.0
+        # Every strip carries the penalty 25 (0.09 - t/c)², scaled by the Reynolds number, excrescence, velocity
+        # change and unsweep factors of CDpwing; their chord-weighted mean is 0.80 for these inputs
+        @test thin.penalty_fraction * thin.CDpwing ≈ 0.80 * 2.5e-3 rtol = 0.02
+        @test thinner.penalty_fraction * thinner.CDpwing ≈ 0.80 * 1.0e-2 rtol = 0.02
+    end
     #end wing_profiledrag_direct
 
     #start wing_profiledrag_scaled
