@@ -263,7 +263,7 @@
     min_web_thickness       = "1.0 mm" # PLACEHOLDER: minimum strut web thickness (same as the braced wing minimum web gauge)
     weight_frac_added       = 0.60 # added weight fraction for fairings and fittings (placeholder)
     cl_ratio                = 0.0 # strut lift model input: strut section cl divided by the mean section cl of the wing (0 = strut carries no lift)
-    spanload_exponent       = 0.5 # strut lift model input: exponent p of the strut circulation shape (1-xi^2)^p (0.5 = elliptic)
+    spanload_exponent       = 0.0 # strut lift model input: exponent p of the strut circulation shape (1-xi^2)^p (0.0 = straight) (0.5 = elliptic)
 
 [Wing.Jury]
     # Vertical jury strut. Only used if `wing_config` is "truss_braced" (this file is strut_braced)
