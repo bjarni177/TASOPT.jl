@@ -12,7 +12,8 @@ using ..atmosphere
 using ..TASOPT: __TASOPTindices__, __TASOPTroot__, compare_strings, balance_aircraft!, TrimVar, WingConfig
 
 export airfoil, aircraft_drag!, wing_CM, set_wing_geometry!, wing_loading, tail_loading!, wing_section_cls, 
-    fuselage_drag!, broadcast_fuselage_drag!, plot_airf, aeroperf_sweep, WakeSystem
+    fuselage_drag!, broadcast_fuselage_drag!, plot_airf, aeroperf_sweep, WakeSystem,
+    strut_lift_share, strut_lift_arm, strut_blended_lift_arm
 
 # Define the __init__ function
 #This function gets executed automatically when the module is loaded
