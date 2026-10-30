@@ -5,7 +5,7 @@ Computes the induced drag via the Trefftz plane using a discrete vortex method.
 Formerly, `cditrp!()` but now broken up into smaller functions.
 
 If the Trefftz plane configuration has a strut surface, the strut carries the lift `CL_strut` given by
-[`strut_lift_coefficient`](@ref). The wing lift is reduced by the same amount, so that the total lift stays `CL`.
+the [`strut_lift_share`](@ref) of `CL - CLhtail`. The wing lift is reduced by the same amount, so that the total lift stays `CL`.
 The bound circulation of the strut follows ``(1-\\xi^2)^p`` with ``\\xi = 0`` at the fuselage end and ``\\xi = 1`` at the
 wing end of the strut (see [`set_strut_circulation_shape!`](@ref)).
 

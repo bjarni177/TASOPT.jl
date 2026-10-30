@@ -94,7 +94,7 @@ function aircraft_drag!(ac, imission::Int, ip::Int, computes_wing_direct::Bool; 
       if (computes_wing_direct) 
 #----- integrated across span for CDwing
       # The strut lift is not carried by the wing, like the tail lift
-      CL_strut = strut_lift_coefficient(wing, ac.options.trefftz_config, CL, CLhtail)
+      CL_strut = strut_lift_share(wing, ac.options.trefftz_config) * (CL - CLhtail)
       wing_drag_components = wing_profiledrag_direct(wing,gammat,gammas,
                                     Mach,CL,CLhtail + CL_strut,Reco,
                                     aRexp, rkSunsw,fexcdw,
