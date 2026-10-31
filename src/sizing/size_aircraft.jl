@@ -321,6 +321,7 @@ function _size_aircraft!(ac; itermax=35,
 
         # Size the wing area and chords
         set_wing_geometry!(BW, CL, qinf, wing)
+        check_wing_span!(ac)
 
         # Update wing box chord for fuseW in next iteration
         cbox = wing.layout.root_chord * wing.inboard.cross_section.width_to_chord
@@ -402,6 +403,7 @@ function _size_aircraft!(ac; itermax=35,
             dxWfmax = 2.0 * (dxWfinn + dxWfout)
             Wfuelmp = Wpay - Wpaymax + parg[igWfuel]
             rfmax = Wfuelmp / Wfmax
+            check_wing_fuel_volume!(ac, parg[igWfuel], Wfmax)
         end
 
         # Update wing properties
