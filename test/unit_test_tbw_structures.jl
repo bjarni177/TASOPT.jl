@@ -119,6 +119,7 @@ function sized_braced_aircraft(key = :compatibility, edit! = ac -> nothing)
     return sized_once(key) do
         ac = read_aircraft_with_wing_config("strut_braced")
         ac.wing.layout.ηs = 0.9
+        ac.wing.η_engine = 0.9 # the engine stays at the break
         edit!(ac)
         ac
     end
@@ -976,6 +977,45 @@ end
                 @test saved["Fuselage"]["Weights"]["weight_frac_strut_attach"] == expected
                 @test attach_fraction(read(path, String)) == expected
             end
+        end
+    end
+end
+
+# Engine spanwise location input
+
+@testset "engine_location input" verbose=true begin
+    example_path(name) = joinpath(TASOPT.__TASOPTroot__, "../example", name)
+    read_example(name) = first(read_aircraft_from_text(read(example_path(name), String)))
+
+    @testset "default input puts the engine at the span break" begin
+        wing = read_example("defaults/default_input.toml").wing
+        @test wing.η_engine == 0.285
+        @test wing.η_engine == wing.layout.ηs
+    end
+
+    @testset "default_tbw.toml puts the engine inboard of the strut attachment" begin
+        wing = read_example("defaults/default_tbw.toml").wing
+        @test wing.layout.ηs == 0.6
+        @test wing.η_engine == 0.285
+    end
+
+    @testset "a missing key puts the engine at the span break" begin
+        wing = read_example("cryo_input.toml").wing
+        @test !haskey(TASOPT.TOML.parsefile(example_path("cryo_input.toml"))["Wing"], "engine_location")
+        @test wing.η_engine == wing.layout.ηs
+    end
+
+    @testset "the key sets the engine location, and save and read reproduce it exactly" begin
+        ac, _ = read_aircraft_from_default_dict() do d
+            d["Wing"]["engine_location"] = 0.4321
+        end
+        @test ac.wing.η_engine == 0.4321
+        @test ac.wing.layout.ηs == 0.285
+        mktempdir() do dir
+            path = joinpath(dir, "engine_location_roundtrip.toml")
+            save_aircraft_model(ac, path)
+            @test TASOPT.TOML.parsefile(path)["Wing"]["engine_location"] == 0.4321
+            @test first(read_aircraft_from_text(read(path, String))).wing.η_engine == 0.4321
         end
     end
 end
