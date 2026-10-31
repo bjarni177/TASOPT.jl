@@ -46,6 +46,8 @@ const INFEASIBILITY_DESCRIPTIONS = Dict{Symbol,String}(
     :airfoil_database_exceeded => "wing outside the airfoil database, drag includes the extrapolation penalty",
     :strut_attachment_outboard_limit => "strut attached outboard of the limit",
     :wing_beam_column_margin => "inboard wing axial load too close to its Euler load (placeholder metric)",
+    :wing_fuel_volume_exceeded => "fuel weight exceeds the capacity of the wing tanks",
+    :wing_span_exceeded => "wing span exceeds the span limit",
 )
 
 """
@@ -67,6 +69,31 @@ function report_infeasibilities(ac::aircraft)
     @warn "Infeasible design: constraints violated in the final sizing iteration: " *
           join(describe.(ac.infeasibilities), ", ")
     return nothing
+end
+
+"""
+    check_wing_span!(ac::aircraft)
+
+Records the flag `:wing_span_exceeded` if the wing span `wing.layout.span` strictly exceeds the span limit
+`wing.layout.max_span` (`maxSpan` in the input TOML). A limit of zero or less means no limit, so the wing is never flagged.
+Must be called after the wing geometry has been set.
+
+The span limit is normally enforced by the optimiser outside `size_aircraft!` (see `example/example_opt.jl`).
+This check only reports a violation, it does not change the sizing.
+
+!!! details "🔃 Inputs and Outputs"
+    **Inputs:**
+    - `ac::aircraft`: aircraft object with the wing geometry set.
+
+    **Outputs:**
+    - `ac::aircraft`: the same aircraft object.
+"""
+function check_wing_span!(ac::aircraft)
+    layout = ac.wing.layout
+    if layout.max_span > 0.0 && layout.span > layout.max_span
+        record_infeasibility!(ac, :wing_span_exceeded)
+    end
+    return ac
 end
 
 """
@@ -181,6 +208,31 @@ function check_wing_beam_column!(ac::aircraft)
     P_axial = maximum(abs(case.P_axial_inboard) for case in values(wing.sizing_loads.results); init = 0.0)
     if wing_beam_column_ratio(P_axial, EI, L) > WING_BEAM_COLUMN_RATIO_MAX
         record_infeasibility!(ac, :wing_beam_column_margin)
+    end
+    return ac
+end
+
+"""
+    check_wing_fuel_volume!(ac::aircraft, W_fuel, W_fuel_capacity)
+
+Records the flag `:wing_fuel_volume_exceeded` if fuel is stored in the wing (`options.has_wing_fuel`) and the
+fuel weight `W_fuel` strictly exceeds the weight `W_fuel_capacity` that the geometric wing tanks
+(plus the centre-box tank if `options.has_centerbox_fuel`) can hold. The limit is 100% of the geometric capacity,
+without margin. Does nothing if there is no fuel in the wing.
+
+!!! details "🔃 Inputs and Outputs"
+    **Inputs:**
+    - `ac::aircraft`: aircraft object.
+    - `W_fuel::Float64`: Weight of the design mission fuel to be stored in the wing [N]. This is not the fuel at
+      maximum payload that is used for the structural sizing.
+    - `W_fuel_capacity::Float64`: Weight of fuel that fills the wing tanks [N].
+
+    **Outputs:**
+    - `ac::aircraft`: the same aircraft object.
+"""
+function check_wing_fuel_volume!(ac::aircraft, W_fuel, W_fuel_capacity)
+    if ac.options.has_wing_fuel && W_fuel > W_fuel_capacity
+        record_infeasibility!(ac, :wing_fuel_volume_exceeded)
     end
     return ac
 end
