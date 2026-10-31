@@ -841,3 +841,110 @@ end
         @test xCP - xCP_no_strut_lift ≈ -arm_shift * (para[iaCL] - para[iaCLh] * Sh_S) / para[iaCL] rtol = 1e-10
     end
 end
+
+@testset "Infeasibility flags" verbose=true begin
+    @testset "record, clear and report" begin
+        ac = load_aircraft_quietly()
+        @test ac.infeasibilities == Symbol[]
+
+        # Recording returns the aircraft, never warns, and keeps each flag once in first-occurrence order
+        @test_logs min_level=CoreLogging.Warn begin
+            @test TASOPT.record_infeasibility!(ac, :flag_b) === ac
+            TASOPT.record_infeasibility!(ac, :flag_a)
+            TASOPT.record_infeasibility!(ac, :flag_b)
+        end
+        @test ac.infeasibilities == [:flag_b, :flag_a]
+
+        # Reporting emits a single warning that names every flag
+        logs, _ = Test.collect_test_logs(min_level = CoreLogging.Warn) do
+            TASOPT.report_infeasibilities(ac)
+        end
+        @test length(logs) == 1
+        @test logs[1].level == CoreLogging.Warn
+        @test occursin("flag_a", logs[1].message) && occursin("flag_b", logs[1].message)
+        @test ac.infeasibilities == [:flag_b, :flag_a]
+
+        TASOPT.clear_infeasibilities!(ac)
+        @test isempty(ac.infeasibilities)
+        @test_logs min_level=CoreLogging.Warn TASOPT.report_infeasibilities(ac)
+    end
+
+    @testset "sized default aircraft is feasible and flags do not accumulate" begin
+        ac = load_aircraft_quietly()
+        for _ in 1:2
+            logs, _ = Test.collect_test_logs(min_level = CoreLogging.Warn) do
+                size_aircraft!(ac, printiter = false)
+            end
+            @test ac.infeasibilities == Symbol[]
+            @test !any(l -> occursin("nfeasib", string(l.message)), logs)
+        end
+
+        # Flags left over from an earlier sizing do not survive the next one
+        TASOPT.record_infeasibility!(ac, :stale_flag)
+        Test.collect_test_logs(min_level = CoreLogging.Warn) do
+            size_aircraft!(ac, printiter = false)
+        end
+        @test ac.infeasibilities == Symbol[]
+    end
+
+    @testset "minimum gauge governing the wing cap thickness" begin
+        ac = load_aircraft_quietly()
+        @test ac.wing.inboard.min_cap_thickness == 0.0 && ac.wing.outboard.min_cap_thickness == 0.0
+
+        # A minimum gauge far above the strength-required cap thickness governs the wing cap thickness
+        ac.wing.inboard.min_cap_thickness = 0.05
+        ac.wing.outboard.min_cap_thickness = 0.05
+        Test.collect_test_logs(min_level = CoreLogging.Warn) do
+            size_aircraft!(ac, printiter = false)
+        end
+        @test :wing_cap_min_gauge in ac.infeasibilities
+    end
+
+    @testset "wing outside the airfoil database" begin
+        ac = load_aircraft_quietly()
+        τ_min = ac.wing.airsection.τ[1]
+
+        # A wing thinner than the database lower bound is penalised by the extrapolation penalty
+        t_over_c = τ_min - 0.002
+        ac.wing.inboard.cross_section.thickness_to_chord = t_over_c
+        ac.wing.outboard.cross_section.thickness_to_chord = t_over_c
+        Test.collect_test_logs(min_level = CoreLogging.Warn) do
+            size_aircraft!(ac, printiter = false)
+        end
+        @test :airfoil_database_exceeded in ac.infeasibilities
+    end
+
+    @testset "strut attachment outboard limit" begin
+        @test TASOPT.STRUT_ETA_S_MAX == 0.9
+
+        ac = load_braced_aircraft_quietly()
+        @test ac.options.has_strut
+        for ηs in (0.95, 0.9, 0.6)
+            TASOPT.clear_infeasibilities!(ac)
+            ac.wing.layout.ηs = ηs
+            @test TASOPT.check_strut_attachment!(ac) === ac
+            @test (:strut_attachment_outboard_limit in ac.infeasibilities) == (ηs > TASOPT.STRUT_ETA_S_MAX)
+        end
+
+        # A cantilever wing has no strut to attach
+        ac = load_aircraft_quietly()
+        @test !ac.options.has_strut
+        ac.wing.layout.ηs = 0.95
+        @test TASOPT.check_strut_attachment!(ac) === ac
+        @test isempty(ac.infeasibilities)
+    end
+
+    @testset "wing beam-column ratio" begin
+        @test TASOPT.WING_BEAM_COLUMN_RATIO_MAX == 0.5
+
+        # Axial load over the cantilever Euler load π² EI / (4 L²), for either sign of the axial load
+        EI, L, P_axial = 1e7, 5.0, -1e5
+        ratio = abs(P_axial) * 4 * L^2 / (π^2 * EI)
+        @test TASOPT.wing_beam_column_ratio(P_axial, EI, L) ≈ ratio rtol = 1e-14
+        @test TASOPT.wing_beam_column_ratio(-P_axial, EI, L) ≈ ratio rtol = 1e-14
+        @test TASOPT.wing_beam_column_ratio(0.0, EI, L) == 0.0
+
+        # Doubling the length quarters the Euler load
+        @test TASOPT.wing_beam_column_ratio(P_axial, EI, 2L) ≈ 4 * ratio rtol = 1e-14
+    end
+end
