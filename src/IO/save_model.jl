@@ -208,6 +208,7 @@ function save_aircraft_model(ac::TASOPT.aircraft=TASOPT.read_aircraft_model(),
         d_wing["inner_panel_taper_ratio"] = wing.inboard.λ
         d_wing["outer_panel_taper_ratio"] = wing.outboard.λ
         d_wing["panel_break_location"] = wing.layout.ηs
+        d_wing["engine_location"] = wing.η_engine
 
         d_wing["center_box_halfspan"] = wing.layout.root_span/2
         d_wing["box_width_to_chord"] = wing.inboard.cross_section.width_to_chord
@@ -893,6 +894,7 @@ function reset_regression_test(ac)
         @printf(io, "wing.layout.S = %20.20f \n", wing.layout.S)
         @printf(io, "wing.layout.root_span = %20.20f \n", wing.layout.root_span)
         @printf(io, "wing.layout.ηs = %20.20f \n", wing.layout.ηs)
+        @printf(io, "wing.η_engine = %20.20f \n", wing.η_engine)
         @printf(io, "wing.inboard.λ = %20.20f \n", wing.inboard.λ)
         @printf(io, "wing.outboard.λ = %20.20f \n", wing.outboard.λ)
         @printf(io, "wing.layout.root_chord = %20.20f \n", wing.layout.root_chord)

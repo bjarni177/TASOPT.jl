@@ -576,6 +576,15 @@ readwing(x) = read_input(x, wing_i, dwing)
         @warn "ηs set to $(wing.layout.ηs)"
     end
 
+    # Engine spanwise location: the span break unless the user input sets it. The default input
+    # is not consulted so that an input without the key keeps the engine at the span break.
+    wing.η_engine = get(wing_i, "engine_location", wing.layout.ηs)
+    if !(0 ≤ wing.η_engine ≤ 1.0)
+        @warn "Wing engine location input was $(wing.η_engine); engine_location must be 0 ≤ engine_location ≤ 1.0"
+        wing.η_engine = clamp(wing.η_engine, 0.0, 1.0)
+        @warn "engine_location set to $(wing.η_engine)"
+    end
+
     wing.layout.root_span = 2*Distance(readwing("center_box_halfspan"))
     wing.inboard.cross_section.width_to_chord  = readwing("box_width_to_chord")
     wing.outboard.cross_section.width_to_chord  = readwing("box_width_to_chord")

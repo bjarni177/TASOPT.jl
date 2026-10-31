@@ -307,6 +307,9 @@ $TYPEDFIELDS
     inboard::WingSection = WingSection() # at wing root 
     """Outboard Wing Section (at strut attachment point)"""
     outboard::WingSection = WingSection() # at strut attachment point
+    """Engine spanwise location as a fraction of the half-span, ``\\eta = y/(b/2)`` [-], with one engine per wing"""
+    η_engine::Float64 = 0.0
+
     """Span fraction of inner wing break ("snag")"""
     # ηs::Float64 = 0 
 
