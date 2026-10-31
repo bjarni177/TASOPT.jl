@@ -654,6 +654,7 @@ ac.parg[igxCGaft] = 30
 ac.pare[ieu0,iprotate,1] = 70
 ac.parg[igdfan] = 1.5
 ac.wing.layout.span = 40
+ac.wing.η_engine = ac.wing.layout.ηs #Engine at the span break
 
 ac.landing_gear.main_gear.weight = TASOPT.Weight(y = ac.landing_gear.main_gear.y_offset_halfspan_fraction * ac.wing.layout.span / 2)
 
@@ -661,6 +662,64 @@ TASOPT.size_landing_gear!(ac)
 
 @test ac.landing_gear.main_gear.weight.W ≈ 31787.399917196755
 @test ac.landing_gear.nose_gear.weight.W ≈ 4854.384534273811
+
+@testset "landing gear length follows the engine spanwise location" begin
+    gear_ac = deepcopy(ac)
+    lg = gear_ac.landing_gear
+    half_span = gear_ac.wing.layout.span / 2
+    ηs = gear_ac.wing.layout.ηs
+    η_outboard = 0.6
+
+    nose_length(η_engine) = (gear_ac.wing.η_engine = η_engine; TASOPT.size_landing_gear!(gear_ac); lg.nose_gear.length)
+
+    l_inboard = nose_length(ηs)
+    l_outboard = nose_length(η_outboard)
+
+    # The engine clearance, not the tailstrike, sets the nose gear length
+    x_lg = gear_ac.parg[igxCGaft] + lg.main_gear.distance_CG_to_landing_gear
+    l_tailstrike = (gear_ac.fuselage.layout.x_end - x_lg) * tan(lg.tailstrike_angle) - 2 * gear_ac.fuselage.layout.radius
+    l_clearance = lg.engine_ground_clearance + gear_ac.parg[igdfan] - ηs * half_span * tan(lg.wing_dihedral_angle)
+    @test l_clearance > l_tailstrike
+    @test l_inboard ≈ l_clearance
+
+    # Moving the engine outboard shortens the gear by the dihedral rise of the wing
+    @test l_inboard - l_outboard ≈ (η_outboard - ηs) * half_span * tan(lg.wing_dihedral_angle)
+    @test lg.main_gear.length - l_outboard ≈ lg.main_gear.weight.y * tan(lg.wing_dihedral_angle)
+
+    # Without dihedral the engine location does not matter
+    lg.wing_dihedral_angle = 0.0
+    @test nose_length(ηs) == nose_length(η_outboard)
+end
+
+@testset "wing_engine_arms" begin
+    local wing = deepcopy(ac.wing) # local: the tests below use the global wing
+    wing.layout.span = 40.0
+    wing.layout.root_span = 4.0 # ηo = 0.1
+    wing.layout.ηs = 0.3
+
+    # Engine inboard of the span break
+    wing.η_engine = 0.2
+    arms = TASOPT.structures.wing_engine_arms(wing)
+    @test (arms.neinn, arms.neout, arms.dyeout) == (1, 0, 0.0)
+    @test arms.dyeinn ≈ 2.0
+
+    # Engine at the span break: the arms are the inboard engine arms of the span break
+    wing.η_engine = wing.layout.ηs
+    arms = TASOPT.structures.wing_engine_arms(wing)
+    @test (arms.neinn, arms.neout, arms.dyeout) == (1, 0, 0.0)
+    @test arms.dyeinn == 0.5 * wing.layout.span * (wing.layout.ηs - wing.layout.ηo)
+    @test arms.dyeinn ≈ 4.0
+
+    # Engine outboard of the span break
+    wing.η_engine = 0.8
+    arms = TASOPT.structures.wing_engine_arms(wing)
+    @test (arms.neinn, arms.dyeinn, arms.neout) == (0, 0.0, 1)
+    @test arms.dyeout ≈ 10.0
+
+    # An engine inboard of the wing root station has no inboard arm
+    wing.η_engine = 0.05
+    @test TASOPT.structures.wing_engine_arms(wing).dyeinn == 0.0
+end
 
 @testset "size_wing_section! property tests" begin
     # Re-use wing.outboard from the setup above which already has max_shear_load
