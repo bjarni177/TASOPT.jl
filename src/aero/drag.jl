@@ -108,6 +108,11 @@ function aircraft_drag!(ac, imission::Int, ip::Int, computes_wing_direct::Bool; 
       cdpw = wing_drag_components.CDpwing
       CDwing = wing_drag_components.CDwing
       CDover = wing_drag_components.CDover
+
+      # Flag a wing outside the airfoil database at a cruise point, where its drag includes the extrapolation penalty
+      if ipcruise1 <= ip <= ipcruisen && wing_drag_components.penalty_fraction > 0.0
+            record_infeasibility!(ac, :airfoil_database_exceeded)
+      end
 		
        #if(Ldebug) write(*,*) '...exited wing_profiledrag_direct'
 
