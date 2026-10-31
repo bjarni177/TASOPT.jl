@@ -51,6 +51,26 @@
     @test ac_quick_nopay_reread.parg[igWMTO] ≈ ac_lopay.parg[igWMTO]
     rm(filepath_quick_nopay)
 
+    #check that a quicksave written before the `infeasibilities` field existed still loads as an aircraft
+    # the old layout is mimicked by an `aircraft` struct defined without that field
+    ac_old = load_default_model()
+    old_fields = filter(!=(:infeasibilities), collect(fieldnames(typeof(ac_old))))
+    OldLayout = Module(:OldLayout)
+    Core.eval(OldLayout, Expr(:struct, true, :aircraft,
+        Expr(:block, [Expr(:(::), f, fieldtype(typeof(ac_old), f)) for f in old_fields]...)))
+    ac_old_layout = Core.eval(OldLayout, Expr(:call, :aircraft, [getfield(ac_old, f) for f in old_fields]...))
+    filepath_quick_old = joinpath(TASOPT.__TASOPTroot__, "../test/iotest_quick_old.jld2")
+    TASOPT.JLD2.jldopen(filepath_quick_old, "w") do file
+        file["ac"] = ac_old_layout
+    end
+
+    ac_quick_old = quickload_aircraft(filepath_quick_old)
+    @test ac_quick_old isa TASOPT.aircraft
+    @test ac_quick_old.infeasibilities == Symbol[]
+    @test ac_quick_old.parm[imWpay] == ac_old.parm[imWpay]
+    @test ac_quick_old.wing.layout.S == ac_old.wing.layout.S
+    rm(filepath_quick_old)
+
 #C: outputs to .csv
     using CSV
     #generate file paths
@@ -87,8 +107,8 @@
     @test size(csv1,1) == 4 #4 rows w default indices
     @test size(csv2,1) == 1 #1 row with addl indices (all)
 
-    @test length(csv1[1]) == 973 # = entries w/ full ac `struct` and in default_output_indices
-    @test length(csv2[1]) == 1339 # = entries w/ full ac `struct` and all output_indices
+    @test length(csv1[1]) == 974 # = entries w/ full ac `struct` and in default_output_indices
+    @test length(csv2[1]) == 1340 # = entries w/ full ac `struct` and all output_indices
 
     #test the nested vectors within par arrays
     #a: row 1 in both csvs matches the design cruise point/mission 
