@@ -301,6 +301,10 @@ function _size_aircraft!(ac; itermax=35,
             break
         end
 
+        # Flags reflect the final sizing pass only. They are cleared after the convergence test so that the
+        # pass that detects convergence, which does not size the wing or the drag, keeps the flags of the previous pass
+        clear_infeasibilities!(ac)
+
         #--------------------------------
         ##  Wing sizing section
         #--------------------------------
@@ -371,6 +375,8 @@ function _size_aircraft!(ac; itermax=35,
         more_than_one_case = length(wing.sizing_loads.results) > 1
         section_loads_envelope = (more_than_one_case || options.has_strut) ? envelope : nothing
 
+        check_strut_attachment!(ac)
+
         # Call wing_weights function
         Wwing,Wsinn,Wsout,
         dyWsinn,dyWsout,
@@ -385,6 +391,9 @@ function _size_aircraft!(ac; itermax=35,
                                             has_wing_fuel = options.has_wing_fuel,
                                             has_centerbox_fuel = options.has_centerbox_fuel,
                                             section_loads_envelope = section_loads_envelope)
+
+        check_wing_cap_min_gauge!(ac)
+        check_wing_beam_column!(ac)
 
         # Calculate fuel weight if stored in wings
         Wfmax, dxWfmax, rfmax = 0.0, 0.0, 0.0
@@ -736,6 +745,9 @@ function _size_aircraft!(ac; itermax=35,
     
     #Warn user if HX effectiveness is overwritten
     check_HX_overwriting(eng.heat_exchangers) 
+
+    #Warn user of any design constraints flagged as violated in the final iteration
+    report_infeasibilities(ac)
 end
 
 #TODO: update_WMTO! and update_weights! docstrings need full description
