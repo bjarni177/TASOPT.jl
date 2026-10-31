@@ -359,9 +359,9 @@ function _size_aircraft!(ac; itermax=35,
         dyWinn, dyWout = wing.inboard.dyW, wing.outboard.dyW
         rhofuel = !(options.has_wing_fuel) ? 0.0 : parg[igrhofuel]
 
-        # One engine per wing at the span break ηs (as in TASOPT 2.16 surfw.f).
-        # dyeinn is its moment arm about the wing root station ηo [m]: y_e - y_o = (b/2)(ηs - ηo)
-        dyeinn = 0.5 * wing.layout.span * (wing.layout.ηs - wing.layout.ηo)
+        # One engine per wing at wing.η_engine: inboard of the span break ηs or at it (dyeinn is its moment arm
+        # about the wing root station ηo [m]), or outboard of it (dyeout is its moment arm about ηs [m])
+        (; neinn, dyeinn, neout, dyeout) = wing_engine_arms(wing)
 
         # Load cases of the wing sizing: records the case loads in wing.sizing_loads (results, governing_root,
         # governing_break, governing_strut, governing_strut_compression and n_computed). The returned envelope sizes
@@ -372,7 +372,8 @@ function _size_aircraft!(ac; itermax=35,
                                     W_fuel = parg[igWfuel], freserve = parg[igfreserve],
                                     W_fuel_cap = parg[igWfmax], has_wing_fuel = options.has_wing_fuel)
         envelope = evaluate_wing_sizing_cases!(wing, masses, options.has_wing_fuel, para[iarclt, ip], para[iarcls, ip],
-                                               Lhtail, γt, γs, Weng1, dyeinn; has_strut = options.has_strut)
+                                               Lhtail, γt, γs, Weng1, dyeinn; has_strut = options.has_strut,
+                                               neinn = neinn, neout = neout, dyeout = dyeout)
         more_than_one_case = length(wing.sizing_loads.results) > 1
         section_loads_envelope = (more_than_one_case || options.has_strut) ? envelope : nothing
 
@@ -384,7 +385,7 @@ function _size_aircraft!(ac; itermax=35,
         Wfcen,Wfinn,Wfout,
         dxWfinn,dxWfout,
         dyWfinn,dyWfout,lstrutp = wing_weights!(wing, po, γt, γs,
-                                            Nlift, Weng1, 0, 0.0, 1, dyeinn,
+                                            Nlift, Weng1, neout, dyeout, neinn, dyeinn,
                                             parg[igsigfac], rhofuel;
                                             has_strut = options.has_strut,
                                             has_jury = options.opt_wing_config == WingConfig.TrussBraced,
