@@ -56,6 +56,8 @@ include(joinpath(__TASOPTroot__,"mission/fly_mission.jl"))
 include(joinpath(__TASOPTroot__,"mission/takeoff.jl"))
 include(joinpath(__TASOPTroot__,"balance/balance.jl"))
 export balance_aircraft!
+# Declared here so that the aerodynamics module can record infeasibilities; the method is defined in sizing/infeasibilities.jl
+function record_infeasibility! end
 include(joinpath(__TASOPTroot__,"aero/aero.jl"))
 export plot_airf, aeroperf_sweep
 include(joinpath(__TASOPTroot__,"structures/structures.jl"))
@@ -76,6 +78,7 @@ using .engine
 include(joinpath(__TASOPTroot__,"data_structs/landing_gear.jl"))
 include(joinpath(__TASOPTroot__,"data_structs/options.jl"))
 include(joinpath(__TASOPTroot__,"data_structs/aircraft.jl"))
+include(joinpath(__TASOPTroot__,"sizing/infeasibilities.jl"))
 export aircraft, fuselage_tank
 
 #Include cryogenic tanks after loading Fuselage and fuselage_tank
