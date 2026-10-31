@@ -141,6 +141,34 @@ function outboard_section_loads!(wing, po, gammat, gammas, Nload, We, neout, dye
 end # outboard_section_loads!
 
 """
+    wing_engine_arms(wing)
+
+Returns the number of engines per wing and their spanwise moment arms, in the form that the wing load
+functions take, for the one engine per wing at `wing.η_engine`. An engine at or inboard of the wing break
+`wing.layout.ηs` counts as an inboard engine and an engine outboard of the wing break as an outboard engine.
+
+!!! details "🔃 Inputs and Outputs"
+    **Inputs:**
+    - `wing::TASOPT.structures.Wing`: Wing structure, with the engine location `η_engine`, the span and the wing break
+      and wing root stations in `wing.layout`.
+
+    **Outputs:**
+    - `(neinn, dyeinn, neout, dyeout)`:
+      - `neinn::Int`: Number of engines per wing mounted at or inboard of the wing break.
+      - `dyeinn::Float64`: Spanwise moment arm of the inboard engine about the wing root station ηo [m], zero for an engine inboard of ηo.
+      - `neout::Int`: Number of engines per wing mounted outboard of the wing break.
+      - `dyeout::Float64`: Spanwise moment arm of the outboard engine about the wing break station ηs [m].
+"""
+function wing_engine_arms(wing)
+    half_span = 0.5 * wing.layout.span
+    if wing.η_engine <= wing.layout.ηs
+        return (neinn = 1, dyeinn = max(half_span * (wing.η_engine - wing.layout.ηo), 0.0), neout = 0, dyeout = 0.0)
+    else
+        return (neinn = 0, dyeinn = 0.0, neout = 1, dyeout = half_span * (wing.η_engine - wing.layout.ηs))
+    end
+end # wing_engine_arms
+
+"""
     wing_section_loads(::Cantilever, wing, po, gammas, Nload, We, neinn, dyeinn)
 
 Sets the inboard section shear and bending moment of a wing without a strut, from the outboard
@@ -754,7 +782,8 @@ function wing_sizing_masses(; W_cruise, W_MTO, W_pay, W_paymax, W_fuel, freserve
 end # wing_sizing_masses
 
 """
-    evaluate_wing_sizing_cases!(wing, masses, has_wing_fuel, rclt, rcls, Lhtail, gammat, gammas, We, dyeinn; has_strut = false)
+    evaluate_wing_sizing_cases!(wing, masses, has_wing_fuel, rclt, rcls, Lhtail, gammat, gammas, We, dyeinn;
+        has_strut = false, neinn = 1, neout = 0, dyeout = 0.0)
 
 Computes the root and break loads of every active wing sizing load case and returns their envelope. The
 wing is a cantilever wing, or a wing braced by a strut if `has_strut` is `true`; the loads of each case follow
@@ -767,7 +796,8 @@ and the envelope of the inboard section is the largest over the cases of the roo
 and of the root and break shear, instead of the root loads only. The case with the most negative strut force,
 if the strut is compressed in any case, is stored in `wing.sizing_loads.governing_strut_compression`.
 
-Active gust cases are skipped. The wing has one engine per wing at the inboard side. The section loads
+Active gust cases are skipped. By default the wing has one engine per wing at the inboard side; the keywords
+`neinn`, `neout` and `dyeout` set other engine locations (see [`wing_engine_arms`](@ref)). The section loads
 of the `wing` are not modified.
 
 !!! details "🔃 Inputs and Outputs"
@@ -784,6 +814,9 @@ of the `wing` are not modified.
     - `We::Float64`: Weight of one engine [N].
     - `dyeinn::Float64`: Average spanwise moment arm of the inboard engine about the wing root station ηo [m].
     - `has_strut::Bool`: (keyword, default `false`) Whether the wing is braced by a strut.
+    - `neinn::Int`: (keyword, default 1) Number of engines per wing mounted at or inboard of the wing break.
+    - `neout::Int`: (keyword, default 0) Number of engines per wing mounted outboard of the wing break.
+    - `dyeout::Float64`: (keyword, default 0.0) Average spanwise moment arm of the outboard engines about the wing break station ηs [m].
 
     **Outputs:**
     - Cantilever wing: `(S_root, M_root, S_break, M_break)`: Largest magnitude of the shear and bending moment
@@ -796,7 +829,7 @@ of the `wing` are not modified.
       case was evaluated.
 """
 function evaluate_wing_sizing_cases!(wing, masses, has_wing_fuel, rclt, rcls, Lhtail, gammat, gammas, We, dyeinn;
-        has_strut = false)
+        has_strut = false, neinn = 1, neout = 0, dyeout = 0.0)
     sl = wing.sizing_loads
     n_pullup = sl.pullup.load_factor
     config = has_strut ? Braced() : Cantilever()
@@ -815,7 +848,7 @@ function evaluate_wing_sizing_cases!(wing, masses, has_wing_fuel, rclt, rcls, Lh
         ms = wing_mass_state(case.mass_state, has_wing_fuel; masses...)
         (Nload, po) = wing_case_root_loading(case, wing, rclt, rcls, ms.W_lift, Lhtail, n_pullup)
         case.n_computed = Nload
-        sl.results[name] = wing_case_loads(config, deepcopy(wing), po, gammat, gammas, Nload, We, 0, 0.0, 1, dyeinn)
+        sl.results[name] = wing_case_loads(config, deepcopy(wing), po, gammat, gammas, Nload, We, neout, dyeout, neinn, dyeinn)
     end
     isempty(sl.results) && return nothing
 
