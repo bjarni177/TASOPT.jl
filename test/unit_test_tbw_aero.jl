@@ -869,22 +869,83 @@ end
         @test_logs min_level=CoreLogging.Warn TASOPT.report_infeasibilities(ac)
     end
 
-    @testset "sized default aircraft is feasible and flags do not accumulate" begin
+    @testset "flags do not accumulate and stale flags are cleared; baseline carries the span and fuel-volume flags" begin
         ac = load_aircraft_quietly()
         for _ in 1:2
             logs, _ = Test.collect_test_logs(min_level = CoreLogging.Warn) do
                 size_aircraft!(ac, printiter = false)
             end
-            @test ac.infeasibilities == Symbol[]
-            @test !any(l -> occursin("nfeasib", string(l.message)), logs)
+            # The default aircraft is wider than its span limit and carries 2.2% more fuel than its wing tanks hold
+            @test ac.infeasibilities == [:wing_span_exceeded, :wing_fuel_volume_exceeded]
+            @test count(l -> occursin("nfeasib", string(l.message)), logs) == 1
+            warning = only(filter(l -> occursin("nfeasib", string(l.message)), logs))
+            @test occursin("wing_span_exceeded", warning.message) && occursin("wing_fuel_volume_exceeded", warning.message)
         end
 
         # Flags left over from an earlier sizing do not survive the next one
         TASOPT.record_infeasibility!(ac, :stale_flag)
+        @test ac.infeasibilities == [:wing_span_exceeded, :wing_fuel_volume_exceeded, :stale_flag]
         Test.collect_test_logs(min_level = CoreLogging.Warn) do
             size_aircraft!(ac, printiter = false)
         end
-        @test ac.infeasibilities == Symbol[]
+        @test ac.infeasibilities == [:wing_span_exceeded, :wing_fuel_volume_exceeded]
+    end
+
+    @testset "wing span limit" begin
+        ac = load_aircraft_quietly()
+        @test ac.wing.layout.max_span > 0
+
+        # The flag is recorded only when the span strictly exceeds a positive limit
+        for (span, max_span, flagged) in ((40.0, 35.0, true), (35.0, 35.0, false), (30.0, 35.0, false), (40.0, 0.0, false))
+            TASOPT.clear_infeasibilities!(ac)
+            ac.wing.layout.span = span
+            ac.wing.layout.max_span = max_span
+            @test TASOPT.check_wing_span!(ac) === ac
+            @test (:wing_span_exceeded in ac.infeasibilities) == flagged
+        end
+    end
+
+    @testset "sized regional aircraft is within its span limit" begin
+        ac = load_aircraft_quietly(joinpath(TASOPT.__TASOPTroot__, "../example/defaults/default_regional.toml"))
+        Test.collect_test_logs(min_level = CoreLogging.Warn) do
+            size_aircraft!(ac, printiter = false)
+        end
+        @test 0 < ac.wing.layout.span < ac.wing.layout.max_span
+        @test !(:wing_span_exceeded in ac.infeasibilities)
+    end
+
+    @testset "wing fuel volume" begin
+        W_fuel_capacity = 2.0e5
+        ac = load_aircraft_quietly()
+        @test ac.options.has_wing_fuel
+
+        # The flag is recorded only when the fuel strictly exceeds the tank capacity
+        for (ratio, flagged) in ((1.01, true), (1.0, false), (0.9, false))
+            TASOPT.clear_infeasibilities!(ac)
+            @test TASOPT.check_wing_fuel_volume!(ac, ratio * W_fuel_capacity, W_fuel_capacity) === ac
+            @test (:wing_fuel_volume_exceeded in ac.infeasibilities) == flagged
+        end
+
+        # Fuel stored outside the wing is not limited by the wing tank capacity
+        TASOPT.clear_infeasibilities!(ac)
+        ac.options.has_wing_fuel = false
+        @test TASOPT.check_wing_fuel_volume!(ac, 1.5 * W_fuel_capacity, W_fuel_capacity) === ac
+        @test isempty(ac.infeasibilities)
+    end
+
+    @testset "sized cryogenic aircraft has no wing fuel volume flag" begin
+        ac = load_aircraft_quietly(joinpath(TASOPT.__TASOPTroot__, "../example/cryo_input.toml"))
+        @test !ac.options.has_wing_fuel
+        Test.collect_test_logs(min_level = CoreLogging.Warn) do
+            size_aircraft!(ac, iter = 50, printiter = false)
+        end
+        @test !(:wing_fuel_volume_exceeded in ac.infeasibilities)
+
+        # The tank volume accounts for the ullage: the fuel weight is below the full-liquid capacity
+        fuel_fill_ratio = ac.parg[igWfuel] / ac.parg[igWfmax]
+        @test fuel_fill_ratio ≈ ac.parg[igrhofuel] / ac.fuse_tank.rhofuel rtol = 1e-6
+        @test fuel_fill_ratio < 1.0
+        @test isapprox(fuel_fill_ratio, 1 - ac.fuse_tank.ullage_frac, atol = 0.01)
     end
 
     @testset "minimum gauge governing the wing cap thickness" begin
