@@ -155,6 +155,47 @@ function wing_additional_weight(wing::AbstractWing)
     
 end
 
+"""
+    fold_station_geometry(wing::Wing, η_f) -> NamedTuple
+
+Calculates the planform and wing-box geometry at the spanwise fold station `η_f`, which lies on the outboard
+panel (`ηs ≤ η_f ≤ 1`). The chord varies linearly between the break chord ratio `λs` and the tip chord ratio `λt`.
+The box height and width are measured perpendicular to the sweep, using the normalized gauges of the outboard cross-section,
+since the outer panel keeps the same normalized gauges as at the panel break `ηs`.
+
+!!! details "🔃 Inputs and Outputs"
+    **Inputs:**
+    - `wing::TASOPT.structures.Wing`: Wing structure.
+    - `η_f::Float64`: Fold station as a fraction of the semi-span.
+
+    **Outputs:** `NamedTuple` with fields
+    - `λ_f::Float64`: Chord ratio `c_f / c_root` at the fold station.
+    - `ℓ::Float64`: Spanwise length of the wing outboard of the fold station, `(b/2)(1 - η_f)` [m].
+    - `y_f::Float64`: Spanwise position of the fold station from the centerline, `η_f b/2` [m].
+    - `c_f::Float64`: Streamwise chord at the fold station [m].
+    - `c_perp_f::Float64`: Chord at the fold station perpendicular to the sweep, `c_f cos(Λ)` [m].
+    - `h_box_eff::Float64`: Effective (root-mean-square) wing-box height at the fold station [m].
+    - `w_box::Float64`: Wing-box width at the fold station [m].
+"""
+function fold_station_geometry(wing::Wing, η_f)
+    layout = wing.layout
+    cross_section = wing.outboard.cross_section
+
+    λs = wing.inboard.λ
+    λt = wing.outboard.λ
+
+    λ_f = λs + (λt - λs) * (η_f - layout.ηs) / (1 - layout.ηs)
+    ℓ = (layout.span / 2) * (1 - η_f)
+    y_f = η_f * layout.span / 2
+    c_f = layout.root_chord * λ_f
+    c_perp_f = c_f * cosd(layout.sweep)
+
+    _, h_rms = get_average_sparbox_heights(cross_section)
+    h_box_eff = h_rms * c_perp_f
+    w_box = cross_section.width_to_chord * c_perp_f
+
+    return (; λ_f, ℓ, y_f, c_f, c_perp_f, h_box_eff, w_box)
+end
 
 """
 """
