@@ -42,6 +42,7 @@ export WingSection,TailSection,Wing,FoldingWingTip,Tail,wing_additional_weight
 #include sizing of surfaces
 include(joinpath(__TASOPTroot__,"structures/calculate_centroid_offset.jl"))
 include(joinpath(__TASOPTroot__,"structures/wing_weights.jl"))
+include(joinpath(__TASOPTroot__,"structures/folding_wingtip.jl"))
 export WingSectionDimensions
 
 include(joinpath(__TASOPTroot__,"structures/size_cabin.jl")) #Seat layouts and cabin length
