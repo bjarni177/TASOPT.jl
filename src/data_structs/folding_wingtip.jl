@@ -30,11 +30,11 @@ $TYPEDFIELDS
     σ_br_lug::Float64 = materials.MaterialProperties["300M"]["bearing_strength"]
     """Lug outer radius over pin diameter"""
     lug_R_over_d::Float64 = 0.0
-    """Lug thickness over pin diameter"""
+    """Lug length from the pin centre to the lug base over pin diameter"""
     lug_L_over_d::Float64 = 0.0
     """Fitting length over local wing box height"""
     fitting_length_factor::Float64 = 0.0
-    """Minimum rib gauge thickness [m]"""
+    """PLACEHOLDER input: minimum rib gauge thickness [m]"""
     rib_min_gauge::Float64 = 0.0
     """PLACEHOLDER input: actuator mass per unit hinge torque [kg/(N m)]"""
     actuator_torque_density::Float64 = 0.0
@@ -76,6 +76,4 @@ $TYPEDFIELDS
     span_margin::Float64 = 0.0
     """Fin top height minus folded wingtip height [m]"""
     height_margin::Float64 = 0.0
-    """Set when the fin top reference may not apply (T-tail); the height margin uses the fin top"""
-    tail_flag::Bool = false
 end
