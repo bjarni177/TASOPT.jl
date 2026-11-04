@@ -190,6 +190,53 @@ density and 12% higher modulus, as well as other improved properties """
     thermal_conductivity = 44.5 #W/(m K)
 
 # -----------------------------------------------------
+# Fitting alloys for the folding-wingtip mechanism (hinge/latch pins, lugs, fittings).
+# Structural values are from MIL-HDBK-5J (31 Jan 2003), room-temperature S-basis design
+# allowables, converted from ksi / Msi / lb/in^3 to SI:
+#   https://everyspec.com/MIL-HDBK/MIL-HDBK-0001-0099/MIL_HDBK_5J_139/
+# bearing_strength = Fbru (ultimate bearing strength) at e/D = 2.0.
+# thermal_conductivity is set to 0.0: it is unused by the mechanism model.
+# -----------------------------------------------------
+[Ti-6Al-4V]
+    description = "Titanium Ti-6Al-4V, annealed die forging (AMS 4928), 2.001-4.000 in thick"
+    source = "MIL-HDBK-5J Table 5.4.1.0(f)"
+    density = 4429.0 #kg/m3 (0.160 lb/in^3)
+    youngs_modulus = 116.5e9 #Pa (16.9e3 ksi)
+    shear_modulus = 44.8e9 #Pa (6.5e3 ksi)
+    poissons_ratio = 0.31
+    YTS = 827e6 #Yield tensile strength, Fty L (120 ksi)
+    UTS = 896e6 #Ultimate tensile strength, Ftu L (130 ksi)
+    shear_strength = 545e6 #Fsu (79 ksi)
+    bearing_strength = 1772e6 #Fbru, e/D = 2.0 (257 ksi)
+    thermal_conductivity = 0.0 #W/(m K), unused by the mechanism model
+
+[300M]
+    description = "300M low-alloy steel, quenched and tempered, Ftu = 280 ksi (AMS 6419 / AMS 6257). Bar, forging, tubing"
+    source = "MIL-HDBK-5J Table 2.3.1.0(f1)"
+    density = 7833.0 #kg/m3 (0.283 lb/in^3)
+    youngs_modulus = 199.9e9 #Pa (29.0e3 ksi)
+    shear_modulus = 75.8e9 #Pa (11.0e3 ksi)
+    poissons_ratio = 0.32
+    YTS = 1586e6 #Yield tensile strength, Fty (230 ksi)
+    UTS = 1931e6 #Ultimate tensile strength, Ftu (280 ksi)
+    shear_strength = 1158e6 #Fsu (168 ksi)
+    bearing_strength = 3620e6 #Fbru, e/D = 2.0, dry pin (525 ksi)
+    thermal_conductivity = 0.0 #W/(m K), unused by the mechanism model
+
+[15-5PH]
+    description = "15-5PH precipitation-hardening stainless steel, H1025, bar and forging (AMS 5659)"
+    source = "MIL-HDBK-5J Table 2.6.7.0(b)"
+    density = 7833.0 #kg/m3 (0.283 lb/in^3)
+    youngs_modulus = 196.5e9 #Pa (28.5e3 ksi)
+    shear_modulus = 77.2e9 #Pa (11.2e3 ksi)
+    poissons_ratio = 0.27
+    YTS = 1000e6 #Yield tensile strength, Fty (145 ksi)
+    UTS = 1069e6 #Ultimate tensile strength, Ftu (155 ksi)
+    shear_strength = 669e6 #Fsu (97 ksi)
+    bearing_strength = 2289e6 #Fbru, e/D = 2.0, dry pin (332 ksi)
+    thermal_conductivity = 0.0 #W/(m K), unused by the mechanism model
+
+# -----------------------------------------------------
 # Generic conductors with electrical properties taken 
 # from here: https://en.wikipedia.org/wiki/Electrical_resistivity_and_conductivity#Resistivity_and_conductivity_of_various_materials 
 # -----------------------------------------------------
