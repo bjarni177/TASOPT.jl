@@ -14,6 +14,29 @@
         @test Al.USS == database["Al-7075"]["shear_strength"]
     end
 
+    @testset "Structural Alloys: thermal conductivity" begin
+        # Fitting alloys: no conductivity needed, so k is zero (not NaN); Fbru is read from the database
+        for name in ["Ti-6Al-4V", "300M", "15-5PH"]
+            alloy = @test_logs StructuralAlloy(name)
+            @test alloy.k == 0.0
+            @test database[name]["bearing_strength"] > 0.0
+        end
+
+        # Alloy with a conductivity keeps it and logs nothing
+        alloy = @test_logs StructuralAlloy("Al-7075")
+        @test alloy.k == database["Al-7075"]["thermal_conductivity"]
+
+        # Missing conductivity falls back to zero and logs the alloy name
+        # (no alloy in the database lacks the key, so a copy of Al-7075 without it is inserted temporarily)
+        database["test-alloy"] = delete!(copy(database["Al-7075"]), "thermal_conductivity")
+        try
+            alloy = @test_logs (:info, r"test-alloy") StructuralAlloy("test-alloy")
+            @test alloy.k == 0.0
+        finally
+            delete!(database, "test-alloy")
+        end
+    end
+
     @testset "Conductors" begin
         Cu = Conductor("Cu")
         @test Cu.ρ == database["Cu"]["density"] 
