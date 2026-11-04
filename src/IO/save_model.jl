@@ -281,6 +281,27 @@ function save_aircraft_model(ac::TASOPT.aircraft=TASOPT.read_aircraft_model(),
         d_wing_weight["attachments"] = wing.weight_frac_attachments
     d_wing["Weightfracs"] = d_wing_weight
 
+    #Folding wingtip (inputs only; sigma_br_pin and sigma_br_lug are derived from the alloys on read)
+    fold = wing.fold
+    d_wing_fold = Dict()
+        d_wing_fold["has_fold"] = fold.has_fold
+        d_wing_fold["fold_location"] = fold.η_fold
+        d_wing_fold["n_hinge"] = fold.n_hinge
+        d_wing_fold["n_latch"] = fold.n_latch
+        d_wing_fold["fitting_factor"] = fold.fitting_factor
+        d_wing_fold["pin_material"] = fold.material_pin.name
+        d_wing_fold["lug_material"] = fold.material_lug.name
+        d_wing_fold["fitting_material"] = fold.material_fitting.name
+        d_wing_fold["lug_R_over_d"] = fold.lug_R_over_d
+        d_wing_fold["lug_L_over_d"] = fold.lug_L_over_d
+        d_wing_fold["fitting_length_factor"] = fold.fitting_length_factor
+        d_wing_fold["rib_min_gauge"] = fold.rib_min_gauge #m, read back as SI
+        d_wing_fold["actuator_torque_density"] = fold.actuator_torque_density
+        d_wing_fold["ground_wind_speed"] = fold.ground_wind_speed #m/s, read back as SI
+        d_wing_fold["systems_mass"] = fold.systems_mass
+        d_wing_fold["delta_CD_fold_counts"] = fold.ΔCD_fold_counts
+    d_wing["FoldingTip"] = d_wing_fold
+
     d_out["Wing"] = d_wing
     #--end Wing----------------
 
@@ -851,6 +872,33 @@ function reset_regression_test(ac)
         @printf(io, "wing.inboard.co = %20.20f \n", wing.inboard.co)
         @printf(io, "wing.outboard.co = %20.20f \n", wing.outboard.co)
         @printf(io, "wing.mean_aero_chord = %20.20f \n", wing.mean_aero_chord)
+        @printf(io, "wing.fold.η_fold = %20.20f \n", wing.fold.η_fold)
+        @printf(io, "wing.fold.fitting_factor = %20.20f \n", wing.fold.fitting_factor)
+        @printf(io, "wing.fold.σ_br_pin = %20.20f \n", wing.fold.σ_br_pin)
+        @printf(io, "wing.fold.σ_br_lug = %20.20f \n", wing.fold.σ_br_lug)
+        @printf(io, "wing.fold.lug_R_over_d = %20.20f \n", wing.fold.lug_R_over_d)
+        @printf(io, "wing.fold.lug_L_over_d = %20.20f \n", wing.fold.lug_L_over_d)
+        @printf(io, "wing.fold.fitting_length_factor = %20.20f \n", wing.fold.fitting_length_factor)
+        @printf(io, "wing.fold.rib_min_gauge = %20.20f \n", wing.fold.rib_min_gauge)
+        @printf(io, "wing.fold.actuator_torque_density = %20.20f \n", wing.fold.actuator_torque_density)
+        @printf(io, "wing.fold.ground_wind_speed = %20.20f \n", wing.fold.ground_wind_speed)
+        @printf(io, "wing.fold.systems_mass = %20.20f \n", wing.fold.systems_mass)
+        @printf(io, "wing.fold.ΔCD_fold_counts = %20.20f \n", wing.fold.ΔCD_fold_counts)
+        @printf(io, "wing.fold.S_fold = %20.20f \n", wing.fold.S_fold)
+        @printf(io, "wing.fold.M_fold = %20.20f \n", wing.fold.M_fold)
+        @printf(io, "wing.fold.F_cap = %20.20f \n", wing.fold.F_cap)
+        @printf(io, "wing.fold.W_hinge_lugs = %20.20f \n", wing.fold.W_hinge_lugs)
+        @printf(io, "wing.fold.W_latches = %20.20f \n", wing.fold.W_latches)
+        @printf(io, "wing.fold.W_load_intro = %20.20f \n", wing.fold.W_load_intro)
+        @printf(io, "wing.fold.W_actuator = %20.20f \n", wing.fold.W_actuator)
+        @printf(io, "wing.fold.W_fold = %20.20f \n", wing.fold.W_fold)
+        @printf(io, "wing.fold.dyW_fold = %20.20f \n", wing.fold.dyW_fold)
+        @printf(io, "wing.fold.dxW_fold = %20.20f \n", wing.fold.dxW_fold)
+        @printf(io, "wing.fold.CD_fold = %20.20f \n", wing.fold.CD_fold)
+        @printf(io, "wing.fold.z_tip = %20.20f \n", wing.fold.z_tip)
+        @printf(io, "wing.fold.ground_span = %20.20f \n", wing.fold.ground_span)
+        @printf(io, "wing.fold.span_margin = %20.20f \n", wing.fold.span_margin)
+        @printf(io, "wing.fold.height_margin = %20.20f \n", wing.fold.height_margin)
 
         @printf(io, "# ------------------------------\n")
         @printf(io,"# Htail\n")

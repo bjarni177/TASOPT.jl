@@ -36,14 +36,15 @@ end
 """
 $TYPEDEF
 
-The Wing structure is composed of 6 sub-structures as follow and are visualized [here](../assets/wing_struct.png).
+The Wing structure is composed of 7 sub-structures as follow and are visualized [here](../assets/wing_struct.png).
 
 1. General Properties
 2. Wing Layout
 3. Material
 4. Wing Sections
 5. Strut
-6. Weight Fractions
+6. Folding Wingtip
+7. Weight Fractions
 
 See [`structures.WingSection`](@ref), [`structures.WingLayout`](@ref) or [`structures.WingCrossSection`](@ref) for more detail.
 
@@ -81,6 +82,9 @@ $TYPEDFIELDS
     has_strut::Bool = false
     strut::Strut = Strut()
     
+    """Folding wingtip mechanism"""
+    fold::FoldingWingTip = FoldingWingTip()
+
     """Wing flap weight fraction"""
     weight_frac_flap::Float64 = 0.0
     """Wing slats weight fraction"""

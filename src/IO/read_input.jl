@@ -651,6 +651,46 @@ dweight = dwing["Weightfracs"]
     wing.weight_frac_spoilers = readweight("spoilers")
     wing.weight_frac_attachments = readweight("attachments")
 
+# Folding wingtip. Pin and lug bearing strengths come from the material database
+# Templates without a FoldingTip block (regional, wide) use the block of default_input.toml
+dfold = haskey(dwing, "FoldingTip") ? dwing["FoldingTip"] :
+    TOML.parsefile(joinpath(TASOPT.__TASOPTroot__, "../example/defaults/default_input.toml"))["Wing"]["FoldingTip"]
+fold_i = read_input("FoldingTip", wing_i, Dict("FoldingTip" => dfold))
+readfold(x) = read_input(x, fold_i, dfold)
+    fold = wing.fold
+    fold.has_fold = readfold("has_fold")
+    fold.η_fold = readfold("fold_location")
+    fold.n_hinge = readfold("n_hinge")
+    fold.n_latch = readfold("n_latch")
+    fold.fitting_factor = readfold("fitting_factor")
+
+    fold.material_pin = StructuralAlloy(readfold("pin_material"))
+    fold.material_lug = StructuralAlloy(readfold("lug_material"))
+    fold.material_fitting = StructuralAlloy(readfold("fitting_material"))
+    for (alloy, name) in ((fold.material_pin, "σ_br_pin"), (fold.material_lug, "σ_br_lug"))
+        haskey(materials.MaterialProperties[alloy.name], "bearing_strength") ||
+            error("Alloy $(alloy.name) has no bearing_strength in the material database, needed for the fold $name")
+    end
+    fold.σ_br_pin = materials.MaterialProperties[fold.material_pin.name]["bearing_strength"]
+    fold.σ_br_lug = materials.MaterialProperties[fold.material_lug.name]["bearing_strength"]
+
+    fold.lug_R_over_d = readfold("lug_R_over_d")
+    fold.lug_L_over_d = readfold("lug_L_over_d")
+    fold.fitting_length_factor = readfold("fitting_length_factor")
+    fold.rib_min_gauge = Distance(readfold("rib_min_gauge"))
+    fold.actuator_torque_density = readfold("actuator_torque_density")
+    fold.ground_wind_speed = Speed(readfold("ground_wind_speed"))
+    fold.systems_mass = readfold("systems_mass")
+    fold.ΔCD_fold_counts = readfold("delta_CD_fold_counts")
+
+    if fold.has_fold
+        wing.layout.ηs < fold.η_fold < 1 ||
+            error("Wing.FoldingTip fold_location must lie between panel_break_location and 1")
+        fold.n_hinge >= 1 || error("Wing.FoldingTip n_hinge must be at least 1")
+        fold.n_latch >= 1 || error("Wing.FoldingTip n_latch must be at least 1")
+        fold.fitting_factor >= 1 || error("Wing.FoldingTip fitting_factor must be at least 1")
+    end
+
 # ---- End Wing -----
 
 # ---------------------------------
