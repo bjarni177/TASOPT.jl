@@ -293,6 +293,26 @@
     spoilers = 0.020   # Spoilers, spolier mounts and attachements
     attachments = 0.03 # Wing attachment hardware
 
+[Wing.FoldingTip]
+    # Folding wingtip, only used when has_fold = true. Hinge and latch pins, lugs and
+    # fittings use alloys from the material database (src/material_data/MaterialProperties.toml)
+    has_fold = false       # Wingtip folds (true) or is fixed (false)
+    fold_location = 0.7    # Span fraction of the fold hinge line, between panel_break_location and 1
+    n_hinge = 1            # Number of hinges
+    n_latch = 1            # Number of latches
+    fitting_factor = 1.15  # Fitting factor on fittings (14 CFR 25.625), at least 1
+    pin_material = "300M"  # Pin alloy
+    lug_material = "300M"  # Lug alloy
+    fitting_material = "Ti-6Al-4V" # Fitting alloy
+    lug_R_over_d = 1.5     # Lug outer radius over pin diameter
+    lug_L_over_d = 1.5     # Lug thickness over pin diameter
+    fitting_length_factor = 3.0 # Fitting length over local wing box height
+    rib_min_gauge = "0.0 mm" # Minimum rib gauge thickness
+    actuator_torque_density = 0.0 # PLACEHOLDER: actuator mass per unit hinge torque [kg/(N m)]
+    ground_wind_speed = "65 kts"  # Ground wind speed for the hinge load case
+    systems_mass = 0.0     # Fold systems mass (controls, sensors, wiring) [kg]
+    delta_CD_fold_counts = 0.0 # Fold drag increment [drag counts]
+
 
 
 [Stabilizers]
