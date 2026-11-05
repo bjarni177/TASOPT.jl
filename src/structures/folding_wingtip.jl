@@ -211,10 +211,10 @@ end
 Sizes the fold mechanism of the folding wing tip from the loads at the fold station, and stores the loads and weights
 in the outputs of `wing.fold`. It writes only to `wing.fold`.
 
-The wing-box cap force couple is `F_cap = max(0, fitting_factor M_hinge / h_box_eff)`, where `M_hinge = M_f / cos(Λ)` is the
+The wing-box cap force couple is `F_cap = abs(fitting_factor M_hinge / h_box_eff)`, where `M_hinge = M_f / cos(Λ)` is the
 bending moment about the hinge line, which is perpendicular to the sweep, and `h_box_eff` is the effective box depth at
 the fold station from [`fold_station_geometry`](@ref). A negative `M_f`, where the tip weight relief exceeds the aerodynamic
-moment, loads no cap, so `F_cap` is zero. The weight per wing side is the sum of the hinge pins and lugs
+moment, still loads the caps, which must resist it, so `F_cap` uses its magnitude. The weight per wing side is the sum of the hinge pins and lugs
 (which carry the resultant of `F_cap` and the shear `S_f`, sized with [`size_pinned_joint`](@ref)), the latches
 ([`size_latches`](@ref)), the load introduction structure ([`size_load_introduction`](@ref), with ribs of the wing-box
 cap material), the actuator ([`size_fold_actuator`](@ref)) and the fold systems, `fold.systems_mass` per wing side.
@@ -281,8 +281,8 @@ approximation for the sweep term `dxVout`. The fuel volume is proportional to th
 inboard value `λs` at the panel break `ηs` to the tip value `λt` at the tip, so with `s = (η - ηs) / (1 - ηs)` the fraction is
 `∫₀ˢᶠ λ² ds / ∫₀¹ λ² ds`, evaluated in closed form. It is `0` at the panel break and `1` at the tip.
 
-Returns `1.0` when `wing.fold.has_fold` is `false`, so a caller can multiply by it unconditionally. It is not yet
-called by the sizing code.
+Returns `1.0` when `wing.fold.has_fold` is `false`, so a caller can multiply by it unconditionally. It is used by
+[`wing_weights!`](@ref) for the outer-panel fuel terms.
 
 !!! details "🔃 Inputs and Outputs"
     **Inputs:**
@@ -309,8 +309,8 @@ of the fold station `η_f`, for the fuel volume moment `dyVout` of the fuel tank
 the fuel volume is proportional to `λ²`, so with `s = (η - ηs) / (1 - ηs)` the fraction is `∫₀ˢᶠ λ² s ds / ∫₀¹ λ² s ds`,
 evaluated in closed form. It is `0` at the panel break and `1` at the tip.
 
-Returns `1.0` when `wing.fold.has_fold` is `false`, so a caller can multiply by it unconditionally. It is not yet
-called by the sizing code.
+Returns `1.0` when `wing.fold.has_fold` is `false`, so a caller can multiply by it unconditionally. It is used by
+[`wing_weights!`](@ref) for the outer-panel fuel terms.
 
 !!! details "🔃 Inputs and Outputs"
     **Inputs:**
