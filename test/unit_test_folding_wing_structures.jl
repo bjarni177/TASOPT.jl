@@ -832,4 +832,125 @@
             @test landing_gear.wing_dihedral_angle == landing_gear_0.wing_dihedral_angle
         end
     end
+
+    @testset "Folding in wing_weights!" begin
+        po, γt, γs, Nload, sigfac = 1.1e5, 0.225, 0.8666, 3.0, 1.0
+        weights!(wing) = TASOPT.structures.wing_weights!(wing, po, γt, γs, Nload, 3e4, 0, 0.0, 0, 0.0, sigfac, 817.0)
+
+        # Default wing with the geometry, loads and fold inputs filled in; the fold outputs carry the previous iteration
+        function make_wing(; has_fold, has_strut = false, W_fold = 0.0)
+            wing = deepcopy(TASOPT.load_default_model().wing)
+            wing.layout.span, wing.layout.root_chord, wing.layout.root_span = 37.5, 6.2, 3.6
+            wing.layout.ηs, wing.tip_lift_loss = 0.285, 0.05
+            wing.inboard.λ, wing.outboard.λ = 0.7, 0.25
+            wing.inboard.co, wing.outboard.co = 6.2, 6.2 * 0.7
+            for section in (wing.inboard, wing.outboard)
+                section.cross_section.width_to_chord, section.cross_section.web_to_box_height = 0.5, 0.75
+            end
+            wing.inboard.cross_section.thickness_to_chord, wing.outboard.cross_section.thickness_to_chord = 0.1268, 0.1266
+            wing.inboard.weight, wing.outboard.weight, wing.inboard.dyW, wing.outboard.dyW = 5e4, 7e4, 8e4, 3.3e5
+            wing.has_strut, wing.strut.z = has_strut, has_strut ? 3.9 : 0.0
+            fold = wing.fold
+            fold.has_fold, fold.η_fold, fold.n_hinge, fold.n_latch = has_fold, 0.7, 2, 3
+            fold.actuator_torque_density, fold.systems_mass = 1e-3, 12.0
+            fold.W_fold = W_fold
+            fold.dyW_fold = W_fold / 2 * (fold.η_fold - wing.layout.ηs) * wing.layout.span / 2
+            return wing
+        end
+        loads_of(wing) = (wing.outboard.max_shear_load, wing.outboard.moment,
+                          wing.inboard.max_shear_load, wing.inboard.moment)
+
+        @testset "Without folding the fold outputs are ignored and left untouched" begin
+            fresh, junk = make_wing(has_fold = false), make_wing(has_fold = false, W_fold = 1e5)
+            junk.fold.dyW_fold = 1e6
+            @test weights!(fresh) == weights!(junk)
+            @test loads_of(fresh) == loads_of(junk)
+            @test (junk.fold.W_fold, junk.fold.dyW_fold, junk.fold.S_fold) == (1e5, 1e6, 0.0)
+        end
+
+        @testset "The lagged fold weight relieves the outboard loads" begin
+            lagged, none = make_wing(has_fold = true, W_fold = 6e3), make_wing(has_fold = true)
+            dyW_fold = lagged.fold.dyW_fold
+            weights!(lagged); weights!(none)
+            @test none.outboard.max_shear_load - lagged.outboard.max_shear_load ≈ Nload * 6e3 / 2 rtol = 1e-9
+            @test none.outboard.moment - lagged.outboard.moment ≈ Nload * dyW_fold rtol = 1e-9
+            @test lagged.inboard.max_shear_load < none.inboard.max_shear_load
+            @test lagged.inboard.moment < none.inboard.moment
+        end
+
+        @testset "Zero lagged fold weight gives the loads and gauges of the fixed wing" begin
+            folded, fixed = make_wing(has_fold = true), make_wing(has_fold = false)
+            weights!(folded); weights!(fixed)
+            @test loads_of(folded) == loads_of(fixed)
+            @test folded.outboard.caps.thickness == fixed.outboard.caps.thickness
+        end
+
+        @testset "The lagged fold weight relieves the strut" begin
+            lagged, none = make_wing(has_fold = true, has_strut = true, W_fold = 6e3), make_wing(has_fold = true, has_strut = true)
+            lsp = weights!(lagged)[end]; weights!(none)
+            @test lsp > 0
+            @test none.strut.axial_force - lagged.strut.axial_force ≈
+                  Nload * 6e3 / 2 * lsp / (lagged.strut.z * lagged.strut.material.σmax * sigfac) rtol = 1e-9
+        end
+
+        @testset "The fold mechanism is sized with the current outboard gauges" begin
+            wing, expected = make_wing(has_fold = true, W_fold = 6e3), make_wing(has_fold = true, W_fold = 6e3)
+            _, _, Wsout = weights!(wing)
+            Vout = 6.2^2 * 37.5 * (1 - 0.285) * (0.7^2 + 0.7 * 0.25 + 0.25^2) / 6 * cosd(wing.layout.sweep)
+            K_w = Wsout / Vout * (1 + TASOPT.structures.wing_additional_weight(wing))
+            loads = TASOPT.structures.fold_station_loads(expected, po, γt, γs, Nload, K_w)
+            TASOPT.structures.size_fold_mechanism!(expected, loads, sigfac)
+            for name in (:S_fold, :M_fold, :F_cap, :W_fold, :dyW_fold)
+                @test getfield(wing.fold, name) ≈ getfield(expected.fold, name) rtol = 1e-10
+            end
+        end
+
+        @testset "Only the fuel of the outboard panel is reduced by the fold" begin
+            folded, fixed = make_wing(has_fold = true), make_wing(has_fold = false)
+            fold_out, fixed_out = weights!(folded), weights!(fixed)
+            frac = TASOPT.structures.fold_tip_fuel_fraction(folded, folded.fold.η_fold)
+            moment_frac = TASOPT.structures.fold_tip_fuel_moment_fraction(folded, folded.fold.η_fold)
+            @test 0 < frac < 1
+            @test fold_out[8] < fixed_out[8]
+            @test fold_out[8] ≈ frac * fixed_out[8] rtol = 1e-12     # Wfout
+            @test fold_out[10] ≈ frac * fixed_out[10] rtol = 1e-12    # dxWfout
+            @test fold_out[12] ≈ moment_frac * fixed_out[12] rtol = 1e-12 # dyWfout
+            # Wsinn, Wsout, dyWsinn, dyWsout, Wfcen, Wfinn, dxWfinn, dyWfinn keep the full panel
+            for i in (2, 3, 4, 5, 6, 7, 9, 11)
+                @test fold_out[i] == fixed_out[i]
+            end
+            @test folded.inboard.caps.weight.W == fixed.inboard.caps.weight.W
+            @test folded.inboard.webs.weight.W == fixed.inboard.webs.weight.W
+            @test folded.outboard.caps.thickness == fixed.outboard.caps.thickness
+        end
+
+        @testset "The fold mechanism weight is added to the wing weight outside the additional weight factor" begin
+            folded, fixed = make_wing(has_fold = true), make_wing(has_fold = false)
+            @test TASOPT.structures.wing_additional_weight(folded) > 0
+            Wwing_fold, Wwing_fixed = weights!(folded)[1], weights!(fixed)[1]
+            @test folded.fold.W_fold > 0
+            @test Wwing_fold - Wwing_fixed ≈ folded.fold.W_fold rtol = 1e-12
+            @test folded.dxW - fixed.dxW ≈ folded.fold.dxW_fold rtol = 1e-12
+        end
+
+        @testset "The fold mechanism moment about the root follows the sweep offset" begin
+            dxW = Float64[]
+            for sweep in (20.0, 30.0)
+                wing = make_wing(has_fold = true)
+                wing.layout.sweep = sweep
+                weights!(wing)
+                offset = (wing.fold.η_fold - wing.layout.ηo) * wing.layout.span / 2
+                @test wing.fold.dxW_fold ≈ wing.fold.W_fold * offset * tand(sweep) rtol = 1e-12
+                push!(dxW, wing.dxW)
+            end
+            @test dxW[1] != dxW[2]
+        end
+
+        @testset "A fold near the wing tip leaves the outboard fuel almost unchanged" begin
+            folded, fixed = make_wing(has_fold = true), make_wing(has_fold = false)
+            folded.fold.η_fold = 0.999
+            @test TASOPT.structures.fold_tip_fuel_fraction(folded, 0.999) > 0.99
+            @test weights!(folded)[8] ≈ weights!(fixed)[8] rtol = 1e-2
+        end
+    end
 end
