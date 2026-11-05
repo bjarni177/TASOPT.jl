@@ -1,6 +1,13 @@
 @testset "Folding wing structures" verbose=true begin
     database = TASOPT.materials.MaterialProperties
 
+    # Composite Simpson rule with n (even) intervals, used to integrate the reference loads and fractions
+    function simpson(f, a, c, n = 200)
+        h = (c - a) / n
+        return h / 3 * (f(a) + f(c) + 4 * sum(f(a + i * h) for i in 1:2:n-1) +
+                        2 * sum(f(a + i * h) for i in 2:2:n-2))
+    end
+
     @testset "FoldingWingTip defaults" begin
         fold = TASOPT.structures.FoldingWingTip()
 
@@ -18,13 +25,12 @@
             end
         end
 
-        # Outputs start at zero and flags at false
+        # Outputs start at zero
         @test fold.W_fold == 0.0
         @test fold.S_fold == 0.0
         @test fold.M_fold == 0.0
         @test fold.CD_fold == 0.0
         @test fold.span_margin == 0.0
-        @test fold.tail_flag == false
 
         # Materials: 300M pins and lugs, titanium fittings; bearing strengths from the pin and lug alloys
         @test fold.material_pin.name == "300M"
@@ -105,6 +111,7 @@
             @test fold.n_latch == 1
             @test fold.fitting_factor == 1.15
             @test fold.ground_wind_speed ≈ 65 * 0.514444 rtol = 1e-4
+            @test fold.rib_min_gauge == 0.001
             @test fold.material_pin.name == "300M"
             @test fold.material_lug.name == "300M"
             @test fold.material_fitting.name == "Ti-6Al-4V"
@@ -195,6 +202,634 @@
             for field in scalar_fold_fields
                 @test getfield(fold_def_reread, field) == getfield(fold_def, field)
             end
+        end
+    end
+
+    @testset "Fold station geometry" begin
+        wing = TASOPT.structures.Wing()
+        wing.layout.ηs = 0.3
+        wing.layout.span = 40.0
+        wing.layout.root_chord = 6.0
+        wing.layout.sweep = 25.0
+        wing.inboard.λ = 0.6
+        wing.outboard.λ = 0.25
+        wing.outboard.cross_section.thickness_to_chord = 0.12
+        wing.outboard.cross_section.web_to_box_height = 0.75
+        wing.outboard.cross_section.width_to_chord = 0.5
+
+        # Hand calculation of the root-mean-square box height for a web height of 0.75 of the box height
+        A = 1 - 0.75
+        h_rms = 0.12 * sqrt(1 - 2A / 3 + A^2 / 5)
+
+        # Fold at 70% semi-span: the chord ratio is 0.6 - 0.35 * (0.7 - 0.3) / (1 - 0.3) = 0.4
+        geometry = TASOPT.structures.fold_station_geometry(wing, 0.7)
+        c_perp = 6.0 * 0.4 * cosd(25.0)
+        @test geometry.λ_f ≈ 0.4
+        @test geometry.ℓ ≈ 20.0 * 0.3
+        @test geometry.y_f ≈ 0.7 * 20.0
+        @test geometry.c_f ≈ 2.4
+        @test geometry.c_perp_f ≈ c_perp
+        @test geometry.h_box_eff ≈ h_rms * c_perp
+        @test geometry.w_box ≈ 0.5 * c_perp
+
+        # At the panel break the chord ratio is the inboard one
+        at_break = TASOPT.structures.fold_station_geometry(wing, 0.3)
+        @test at_break.λ_f ≈ 0.6
+        @test at_break.ℓ ≈ 20.0 * (1 - 0.3)
+        @test at_break.y_f ≈ 0.3 * 20.0
+
+        # At the tip the chord ratio is the tip one and nothing is left outboard
+        at_tip = TASOPT.structures.fold_station_geometry(wing, 1.0)
+        @test at_tip.λ_f ≈ 0.25
+        @test at_tip.ℓ == 0.0
+        @test at_tip.y_f ≈ 20.0
+    end
+
+    @testset "Fold station loads" begin
+        wing = TASOPT.structures.Wing()
+        wing.layout.ηs = 0.3
+        wing.layout.span = 40.0
+        wing.layout.root_chord = 6.0
+        wing.layout.sweep = 25.0
+        wing.inboard.λ = 0.6
+        wing.outboard.λ = 0.25
+        wing.tip_lift_loss = 0.1
+        wing.fold.η_fold = 0.7
+
+        po = 1e5
+        γs, γt = 0.8, 0.3
+        Nload = 2.5
+        K_w = 4.0e4
+        b, co, ηs, Λ = 40.0, 6.0, 0.3, 25.0
+        λs, λt = 0.6, 0.25
+
+        γ(η) = γs + (γt - γs) * (η - ηs) / (1 - ηs)
+        λ(η) = λs + (λt - λs) * (η - ηs) / (1 - ηs)
+        ΔL_t = 0.1 * po * co * γt * λt
+
+        # Numerical shear and moment about η_f of the lift and of the structural weight outboard of η_f
+        function outboard_integrals(η_f)
+            lift_shear = simpson(η -> po * γ(η) * b / 2, η_f, 1.0)
+            lift_moment = simpson(η -> po * γ(η) * b / 2 * (η - η_f) * b / 2, η_f, 1.0)
+            weight = simpson(η -> K_w * co^2 * cosd(Λ) * λ(η)^2 * b / 2, η_f, 1.0)
+            weight_moment = simpson(η -> K_w * co^2 * cosd(Λ) * λ(η)^2 * b / 2 * (η - η_f) * b / 2, η_f, 1.0)
+            return lift_shear, lift_moment, weight, weight_moment
+        end
+
+        loads = TASOPT.structures.fold_station_loads(wing, po, γt, γs, Nload, K_w)
+        lift_shear, lift_moment, weight, weight_moment = outboard_integrals(0.7)
+        ℓ = b / 2 * (1 - 0.7)
+
+        # Lift shear and moment, including the tip roll-off point load at the tip
+        @test loads.S_a ≈ lift_shear + ΔL_t rtol = 1e-8
+        @test loads.M_a ≈ lift_moment + ΔL_t * ℓ rtol = 1e-8
+
+        # Structural weight and its moment about the fold station
+        @test loads.W_tip ≈ weight rtol = 1e-8
+        @test loads.dyW_tip ≈ weight_moment rtol = 1e-8
+
+        # Loads on the fold are the lift loads less the inertial relief, with Nload ≠ 1
+        @test loads.S_f ≈ loads.S_a - Nload * loads.W_tip
+        @test loads.M_f ≈ loads.M_a - Nload * loads.dyW_tip
+
+        # Fold at the panel break: the outer-panel shear and moment of wing_weights! with the structural weight only
+        wing.fold.η_fold = ηs
+        at_break = TASOPT.structures.fold_station_loads(wing, po, γt, γs, Nload, K_w)
+        W_s = K_w * co^2 * (b / 2) * (1 - ηs) * (λs^2 + λs * λt + λt^2) / 3 * cosd(Λ)
+        dyW_s = K_w * co^2 * (b^2 / 48) * (1 - ηs)^2 * (λs^2 + 2 * λs * λt + 3 * λt^2) * cosd(Λ)
+        S_s = (po * b / 4) * (γs + γt) * (1 - ηs) + ΔL_t - Nload * W_s
+        M_s = (po * b^2 / 24) * (γs + 2 * γt) * (1 - ηs)^2 + ΔL_t * (b / 2) * (1 - ηs) - Nload * dyW_s
+        @test at_break.W_tip ≈ W_s
+        @test at_break.dyW_tip ≈ dyW_s
+        @test at_break.S_f ≈ S_s
+        @test at_break.M_f ≈ M_s
+
+        # Fold at the tip: no structure and no lever arm are left outboard, only the roll-off point load
+        wing.fold.η_fold = 1.0
+        at_tip = TASOPT.structures.fold_station_loads(wing, po, γt, γs, Nload, K_w)
+        @test at_tip.W_tip == 0.0
+        @test at_tip.dyW_tip == 0.0
+        @test at_tip.M_a == 0.0
+        @test at_tip.M_f == 0.0
+        @test at_tip.S_f ≈ ΔL_t
+
+        # Without the tip roll-off loss there is nothing outboard of a fold at the tip
+        wing.tip_lift_loss = 0.0
+        no_loss = TASOPT.structures.fold_station_loads(wing, po, γt, γs, Nload, K_w)
+        @test all(iszero, values(no_loss))
+    end
+
+    @testset "Pinned joint sizing" begin
+        gee = TASOPT.gee
+        make_fold(; pin = "300M", lug = "300M", n_hinge = 2, n_latch = 2) = TASOPT.structures.FoldingWingTip(
+            n_hinge = n_hinge, n_latch = n_latch,
+            material_pin = StructuralAlloy(pin), material_lug = StructuralAlloy(lug),
+            σ_br_pin = database[pin]["bearing_strength"], σ_br_lug = database[lug]["bearing_strength"],
+            lug_R_over_d = 1.5, lug_L_over_d = 1.5)
+
+        # Pin diameter, lug thickness and weight from the double shear and bearing formulas
+        function hand_calculation(F, n, pin, lug, sigfac)
+            τ_allow = StructuralAlloy(pin).τmax * sigfac
+            σ_br_allow = min(database[pin]["bearing_strength"], database[lug]["bearing_strength"]) / 1.5 * sigfac
+            d = sqrt(2F / (n * π * τ_allow))
+            t = F / (n * d * σ_br_allow)
+            R, L = 1.5d, 1.5d
+            A_lug = π * R^2 / 2 + 2R * L - π * d^2 / 4
+            V_pin = π * d^2 / 4 * (2t)
+            V_lug = A_lug * (2t)
+            W = gee * n * (database[pin]["density"] * V_pin + database[lug]["density"] * V_lug)
+            return d, t, W
+        end
+
+        @testset "Hand calculation for each pin material" begin
+            F, n = 1e6, 2
+            for (pin, lug) in (("300M", "300M"), ("Ti-6Al-4V", "15-5PH"), ("15-5PH", "Ti-6Al-4V"))
+                W, details = TASOPT.structures.size_pinned_joint(F, n, make_fold(pin = pin, lug = lug), 1.0)
+                d, t, W_hand = hand_calculation(F, n, pin, lug, 1.0)
+                @test details.d ≈ d rtol = 1e-10
+                @test details.t ≈ t rtol = 1e-10
+                @test W ≈ W_hand rtol = 1e-10
+            end
+        end
+
+        @testset "Scaling with force and number of pins" begin
+            fold = make_fold(pin = "Ti-6Al-4V", lug = "Ti-6Al-4V")
+            joint(F, n) = TASOPT.structures.size_pinned_joint(F, n, fold, 1.0)
+            F0 = 1e6
+            W_ref, ref = joint(F0, 1)
+
+            # d and t both scale with sqrt(F / n), so the weight scales as n (F / n)^1.5 = F^1.5 / sqrt(n)
+            W_double_F, double_F = joint(2F0, 1)
+            @test double_F.d / ref.d ≈ sqrt(2) rtol = 1e-10
+            @test double_F.t / ref.t ≈ sqrt(2) rtol = 1e-10
+            @test W_double_F / W_ref ≈ 2^1.5 rtol = 1e-10
+
+            W_four_pins, four_pins = joint(F0, 4)
+            @test four_pins.d / ref.d ≈ 1 / 2 rtol = 1e-10
+            @test four_pins.t / ref.t ≈ 1 / 2 rtol = 1e-10
+            @test W_four_pins / W_ref ≈ 1 / 2 rtol = 1e-10
+
+            # Two pins instead of one: d, t and the weight all shrink by 1 / sqrt(2)
+            W_two_pins, two_pins = joint(F0, 2)
+            @test two_pins.d / ref.d ≈ 1 / sqrt(2) rtol = 1e-10
+            @test two_pins.t / ref.t ≈ 1 / sqrt(2) rtol = 1e-10
+            @test W_two_pins / W_ref ≈ 1 / sqrt(2) rtol = 1e-10
+        end
+
+        @testset "Allowable stresses scale with sigfac" begin
+            fold = make_fold()
+            W_1, one = TASOPT.structures.size_pinned_joint(1e6, 2, fold, 1.0)
+            W_2, two = TASOPT.structures.size_pinned_joint(1e6, 2, fold, 2.0)
+            d_hand, t_hand, W_hand = hand_calculation(1e6, 2, "300M", "300M", 2.0)
+
+            # Twice the allowables: d shrinks by 1 / sqrt(2) and t = F / (n d σ_br) by (1 / 2) * sqrt(2)
+            @test two.d / one.d ≈ 1 / sqrt(2) rtol = 1e-10
+            @test two.t / one.t ≈ 1 / sqrt(2) rtol = 1e-10
+            @test two.d ≈ d_hand rtol = 1e-10
+            @test two.t ≈ t_hand rtol = 1e-10
+            @test W_2 ≈ W_hand rtol = 1e-10
+            @test W_2 < W_1
+        end
+
+        @testset "Zero force gives no joint" begin
+            W, details = TASOPT.structures.size_pinned_joint(0.0, 2, make_fold(), 1.0)
+            @test W == 0.0
+            for name in (:d, :t, :R, :L)
+                @test getfield(details, name) == 0.0
+            end
+        end
+
+        @testset "Latches carry the cap force" begin
+            fold = make_fold(n_hinge = 3, n_latch = 5)
+            F_cap = 8e5
+            W, details = TASOPT.structures.size_latches(F_cap, fold, 1.0)
+            W_joint, joint = TASOPT.structures.size_pinned_joint(F_cap, 5, fold, 1.0)
+            @test W ≈ W_joint rtol = 1e-12
+            @test details.d ≈ joint.d rtol = 1e-12
+            @test details.t ≈ joint.t rtol = 1e-12
+
+            # The actuator mass is per latch pin and adds its weight to the pinned joint
+            W_actuated, _ = TASOPT.structures.size_latches(F_cap, fold, 1.0; latch_actuator_mass = 0.7)
+            @test W_actuated - W ≈ 0.7 * gee * 5 rtol = 1e-10
+        end
+    end
+
+    @testset "Load introduction sizing" begin
+        gee = TASOPT.gee
+        h_box, w_box, ρ_rib, sigfac = 0.8, 1.5, 2700.0, 1.0
+
+        # One fitting per cap (two per wing side) and two full-depth closing ribs
+        function hand_calculation(F_cap, material, k, t_rib)
+            σ_fit = StructuralAlloy(material).σmax * sigfac
+            W_fittings = 2 * gee * database[material]["density"] * (F_cap / σ_fit) * k * h_box
+            W_ribs = 2 * gee * ρ_rib * w_box * h_box * t_rib
+            return W_fittings, W_ribs
+        end
+
+        make_fold(material, k, t_rib) = TASOPT.structures.FoldingWingTip(
+            material_fitting = StructuralAlloy(material), fitting_length_factor = k, rib_min_gauge = t_rib)
+
+        @testset "Hand calculation for each fitting material" begin
+            F_cap = 5e5
+            for (material, k, t_rib) in (("Ti-6Al-4V", 2.0, 0.001), ("300M", 3.0, 0.0), ("15-5PH", 1.5, 0.002))
+                fold = make_fold(material, k, t_rib)
+                W, details = TASOPT.structures.size_load_introduction(F_cap, h_box, w_box, fold, ρ_rib, sigfac)
+                W_fittings, W_ribs = hand_calculation(F_cap, material, k, t_rib)
+                @test details.W_fittings ≈ W_fittings rtol = 1e-10
+                @test details.W_ribs ≈ W_ribs rtol = 1e-10
+                @test W ≈ W_fittings + W_ribs rtol = 1e-10
+            end
+        end
+
+        @testset "Zero rib gauge leaves only the fittings" begin
+            fold = make_fold("300M", 3.0, 0.0)
+            W, details = TASOPT.structures.size_load_introduction(5e5, h_box, w_box, fold, ρ_rib, sigfac)
+            @test details.W_ribs == 0.0
+            @test W ≈ details.W_fittings rtol = 1e-12
+        end
+
+        @testset "Fitting weight is linear in cap force" begin
+            fold = make_fold("Ti-6Al-4V", 2.0, 0.001)
+            W_1, one = TASOPT.structures.size_load_introduction(2e5, h_box, w_box, fold, ρ_rib, sigfac)
+            W_3, three = TASOPT.structures.size_load_introduction(6e5, h_box, w_box, fold, ρ_rib, sigfac)
+            @test three.W_fittings / one.W_fittings ≈ 3 rtol = 1e-10
+            @test three.W_ribs ≈ one.W_ribs rtol = 1e-12
+        end
+    end
+
+    @testset "Fold actuator sizing" begin
+        gee = TASOPT.gee
+
+        # Same wing and loads as the fold station loads
+        wing = TASOPT.structures.Wing()
+        wing.layout.ηs = 0.3
+        wing.layout.span = 40.0
+        wing.layout.root_chord = 6.0
+        wing.layout.sweep = 25.0
+        wing.inboard.λ = 0.6
+        wing.outboard.λ = 0.25
+        wing.tip_lift_loss = 0.1
+        wing.fold.η_fold = 0.7
+        wing.fold.ground_wind_speed = 33.4
+        wing.fold.actuator_torque_density = 1e-3
+        loads = TASOPT.structures.fold_station_loads(wing, 1e5, 0.3, 0.8, 2.5, 4.0e4)
+
+        # Hand calculation: fold line at 70% semi-span, chord ratio 0.4 there, tip panel length 20 * 0.3
+        ℓ = 20.0 * 0.3
+        co, λ_f, λt = 6.0, 0.4, 0.25
+        ρ_air = TASOPT.atmos(0.0).ρ
+        q_wind = 0.5 * ρ_air * 33.4^2
+        M_grav = loads.W_tip * (loads.dyW_tip / loads.W_tip)
+
+        # Wind moment about the fold line: normal force on the tip panel, whose chord is linear from the fold to the tip,
+        # integrated with a composite Simpson rule (n even intervals)
+        chord(y) = co * (λ_f + (λt - λ_f) * y / ℓ)
+        M_wind = simpson(y -> q_wind * 1.2 * chord(y) * y, 0.0, ℓ)
+
+        @testset "Gravity and wind moments" begin
+            W, details = TASOPT.structures.size_fold_actuator(wing, loads)
+            @test details.M_grav ≈ M_grav rtol = 1e-10
+            @test details.M_wind ≈ M_wind rtol = 1e-8
+            @test details.M_wind ≈ q_wind * 1.2 * co * ℓ^2 * (λ_f + 2λt) / 6 rtol = 1e-10
+            @test details.M_act ≈ M_grav + M_wind rtol = 1e-8
+            @test W ≈ gee * 1e-3 * (M_grav + M_wind) rtol = 1e-8
+        end
+
+        @testset "Zero torque density gives no actuator weight" begin
+            wing.fold.actuator_torque_density = 0.0
+            W, details = TASOPT.structures.size_fold_actuator(wing, loads)
+            @test W == 0.0
+            @test details.M_act ≈ M_grav + M_wind rtol = 1e-8
+            wing.fold.actuator_torque_density = 1e-3
+        end
+
+        @testset "No wind leaves the gravity moment" begin
+            wing.fold.ground_wind_speed = 0.0
+            W, details = TASOPT.structures.size_fold_actuator(wing, loads)
+            @test details.M_wind == 0.0
+            @test details.M_act ≈ M_grav rtol = 1e-10
+            @test W ≈ gee * 1e-3 * M_grav rtol = 1e-10
+        end
+
+        @testset "No tip structure leaves only the wind moment" begin
+            wing.fold.ground_wind_speed = 33.4
+            _, details = TASOPT.structures.size_fold_actuator(wing, (W_tip = 0.0, dyW_tip = 0.0))
+            @test details.M_grav == 0.0
+            @test details.M_act ≈ M_wind rtol = 1e-8
+        end
+    end
+
+    @testset "Fold mechanism sizing" begin
+        gee = TASOPT.gee
+        sigfac = 1.3
+        b, Λ, ηs, ηo = 40.0, 25.0, 0.3, 0.1
+
+        # Wing as in the fold station loads, with a lighter structure so that the moment at the fold is positive
+        make_wing(; fitting_factor = 1.15, η_fold = 0.7) = begin
+            wing = TASOPT.structures.Wing()
+            wing.layout.ηs = ηs
+            wing.layout.root_span = ηo * b
+            wing.layout.span = b
+            wing.layout.root_chord = 6.0
+            wing.layout.sweep = Λ
+            wing.inboard.λ = 0.6
+            wing.outboard.λ = 0.25
+            wing.outboard.cross_section.thickness_to_chord = 0.12
+            wing.outboard.cross_section.web_to_box_height = 0.75
+            wing.outboard.cross_section.width_to_chord = 0.5
+            wing.tip_lift_loss = 0.1
+            wing.weight = 1.0e5
+            wing.dxW = 2.0e5
+            wing.outboard.weight = 3.0e4
+
+            fold = wing.fold
+            fold.η_fold = η_fold
+            fold.n_hinge = 2
+            fold.n_latch = 3
+            fold.fitting_factor = fitting_factor
+            fold.lug_R_over_d = 1.5
+            fold.lug_L_over_d = 1.5
+            fold.fitting_length_factor = 3.0
+            fold.rib_min_gauge = 0.001
+            fold.actuator_torque_density = 1e-3
+            fold.ground_wind_speed = 33.4
+            fold.systems_mass = 12.0
+            return wing
+        end
+        fold_loads(wing, K_w = 1.0e3) = TASOPT.structures.fold_station_loads(wing, 1e5, 0.3, 0.8, 2.5, K_w)
+
+        wing = make_wing()
+        loads = fold_loads(wing)
+        fold = wing.fold
+        geometry = TASOPT.structures.fold_station_geometry(wing, fold.η_fold)
+
+        # Components sized independently from the loads
+        F_cap = 1.15 * (loads.M_f / cosd(Λ)) / geometry.h_box_eff
+        # The hinge pins carry the resultant of the cap force and the shear
+        W_h, _ = TASOPT.structures.size_pinned_joint(hypot(F_cap, loads.S_f), fold.n_hinge, fold, sigfac)
+        W_l, _ = TASOPT.structures.size_latches(F_cap, fold, sigfac)
+        W_li, _ = TASOPT.structures.size_load_introduction(F_cap, geometry.h_box_eff, geometry.w_box, fold,
+                                                           wing.outboard.caps.ρ, sigfac)
+        W_act, _ = TASOPT.structures.size_fold_actuator(wing, loads)
+        W_sys = gee * 12.0
+        W_side = W_h + W_l + W_li + W_act + W_sys
+
+        TASOPT.structures.size_fold_mechanism!(wing, loads, sigfac)
+
+        @testset "Outputs follow from the components" begin
+            @test fold.S_fold == loads.S_f
+            @test fold.M_fold == loads.M_f
+            @test fold.F_cap ≈ F_cap rtol = 1e-12
+            @test fold.W_hinge_lugs ≈ 2W_h rtol = 1e-12
+            @test fold.W_latches ≈ 2W_l rtol = 1e-12
+            @test fold.W_load_intro ≈ 2W_li rtol = 1e-12
+            @test fold.W_actuator ≈ 2W_act rtol = 1e-12
+            @test fold.W_fold ≈ 2W_side rtol = 1e-12
+            @test fold.dyW_fold ≈ W_side * (0.7 - ηs) * b / 2 rtol = 1e-12
+            @test fold.dxW_fold ≈ 2W_side * (geometry.y_f - ηo * b / 2) * tand(Λ) rtol = 1e-12
+        end
+
+        @testset "Total includes the systems allowance" begin
+            components = fold.W_hinge_lugs + fold.W_latches + fold.W_load_intro + fold.W_actuator
+            @test fold.W_fold ≈ components + 2 * gee * fold.systems_mass rtol = 1e-12
+            @test fold.W_fold > components
+        end
+
+        @testset "Only the fold is written, and repeated calls do not accumulate" begin
+            first_call = deepcopy(fold)
+            TASOPT.structures.size_fold_mechanism!(wing, loads, sigfac)
+            for name in fieldnames(typeof(fold))
+                after, before = getfield(fold, name), getfield(first_call, name)
+                if after isa TASOPT.structures.StructuralAlloy
+                    # Mutable struct, so compared field by field against the copy
+                    @test all(getfield(after, f) == getfield(before, f) for f in fieldnames(typeof(after)))
+                else
+                    @test after == before
+                end
+            end
+
+            untouched = make_wing()
+            @test wing.weight == untouched.weight
+            @test wing.dxW == untouched.dxW
+            @test wing.outboard.weight == untouched.outboard.weight
+            @test wing.layout.span == untouched.layout.span
+            @test wing.outboard.caps.ρ == untouched.outboard.caps.ρ
+        end
+
+        @testset "Larger fitting factor increases the cap force and hinge weights" begin
+            previous = nothing
+            for fitting_factor in (1.0, 1.15, 1.3, 1.6)
+                wing_ff = make_wing(fitting_factor = fitting_factor)
+                TASOPT.structures.size_fold_mechanism!(wing_ff, fold_loads(wing_ff), sigfac)
+                current = wing_ff.fold
+                if previous !== nothing
+                    @test current.F_cap > previous.F_cap
+                    @test current.W_hinge_lugs > previous.W_hinge_lugs
+                    @test current.W_latches > previous.W_latches
+                    @test current.W_load_intro > previous.W_load_intro
+                    @test current.W_fold > previous.W_fold
+                end
+                previous = current
+            end
+        end
+
+        @testset "Fold at the panel break has no bending relief" begin
+            wing_break = make_wing(η_fold = ηs)
+            TASOPT.structures.size_fold_mechanism!(wing_break, fold_loads(wing_break), sigfac)
+            @test wing_break.fold.W_fold > 0.0
+            @test wing_break.fold.dyW_fold == 0.0
+        end
+
+        @testset "Negative fold moment gives a cap force of equal magnitude" begin
+            # A heavy tip structure relieves more bending than the lift applies at the fold
+            wing_heavy = make_wing()
+            heavy_loads = fold_loads(wing_heavy, 4.0e4)
+            @test heavy_loads.M_f < 0.0
+
+            TASOPT.structures.size_fold_mechanism!(wing_heavy, heavy_loads, sigfac)
+            fold_heavy = wing_heavy.fold
+            geometry_heavy = TASOPT.structures.fold_station_geometry(wing_heavy, fold_heavy.η_fold)
+            @test fold_heavy.M_fold == heavy_loads.M_f
+
+            # The caps still resist the moment, so the cap force is the magnitude of the one for the same positive moment
+            F_cap_heavy = 1.15 * abs(heavy_loads.M_f / cosd(Λ)) / geometry_heavy.h_box_eff
+            @test fold_heavy.F_cap > 0.0
+            @test fold_heavy.F_cap ≈ F_cap_heavy rtol = 1e-12
+
+            # The components are sized for that force
+            W_h, _ = TASOPT.structures.size_pinned_joint(hypot(F_cap_heavy, heavy_loads.S_f), fold_heavy.n_hinge, fold_heavy, sigfac)
+            W_l, _ = TASOPT.structures.size_latches(F_cap_heavy, fold_heavy, sigfac)
+            W_i, _ = TASOPT.structures.size_load_introduction(F_cap_heavy, geometry_heavy.h_box_eff, geometry_heavy.w_box,
+                                                              fold_heavy, wing_heavy.outboard.caps.ρ, sigfac)
+            @test fold_heavy.W_hinge_lugs ≈ 2 * W_h rtol = 1e-12
+            @test fold_heavy.W_latches ≈ 2 * W_l rtol = 1e-12
+            @test fold_heavy.W_load_intro ≈ 2 * W_i rtol = 1e-12
+            @test isfinite(fold_heavy.W_actuator)
+            @test isfinite(fold_heavy.W_fold)
+        end
+    end
+
+    @testset "Fold tip fuel fractions" begin
+        ηs, λs, λt = 0.3, 0.6, 0.25
+        wing = TASOPT.structures.Wing()
+        wing.layout.ηs = ηs
+        wing.inboard.λ = λs
+        wing.outboard.λ = λt
+        wing.fold.has_fold = true
+
+        # Chord ratio varies linearly from the inboard value at the panel break to the tip value at the tip
+        λ(η) = λs + (λt - λs) * (η - ηs) / (1 - ηs)
+
+        volume_fraction(η_f) = simpson(η -> λ(η)^2, ηs, η_f) / simpson(η -> λ(η)^2, ηs, 1.0)
+        moment_fraction(η_f) = simpson(η -> λ(η)^2 * (η - ηs), ηs, η_f) / simpson(η -> λ(η)^2 * (η - ηs), ηs, 1.0)
+
+        @testset "Match numerical integration" begin
+            @test TASOPT.structures.fold_tip_fuel_fraction(wing, 0.7) ≈ volume_fraction(0.7) rtol = 1e-8
+            @test TASOPT.structures.fold_tip_fuel_moment_fraction(wing, 0.7) ≈ moment_fraction(0.7) rtol = 1e-8
+        end
+
+        @testset "Fold at the panel break and at the tip" begin
+            @test TASOPT.structures.fold_tip_fuel_fraction(wing, ηs) == 0.0
+            @test TASOPT.structures.fold_tip_fuel_moment_fraction(wing, ηs) == 0.0
+            @test TASOPT.structures.fold_tip_fuel_fraction(wing, 1.0) ≈ 1.0
+            @test TASOPT.structures.fold_tip_fuel_moment_fraction(wing, 1.0) ≈ 1.0
+        end
+
+        @testset "No fold keeps all the fuel volume" begin
+            wing.fold.has_fold = false
+            @test TASOPT.structures.fold_tip_fuel_fraction(wing, 0.7) == 1.0
+            @test TASOPT.structures.fold_tip_fuel_moment_fraction(wing, 0.7) == 1.0
+            wing.fold.has_fold = true
+        end
+
+        @testset "Fractions grow with the fold station and the moment fraction is smaller" begin
+            stations = (0.5, 0.7, 0.9)
+            volume = [TASOPT.structures.fold_tip_fuel_fraction(wing, η_f) for η_f in stations]
+            moment = [TASOPT.structures.fold_tip_fuel_moment_fraction(wing, η_f) for η_f in stations]
+            @test all(diff(volume) .> 0)
+            @test all(diff(moment) .> 0)
+            @test all(0.0 .< moment .< volume .< 1.0)
+        end
+    end
+
+    @testset "Ground span and height margins" begin
+        b, Λ, ηs, ηo, η_fold = 40.0, 25.0, 0.3, 0.1, 0.7
+        max_span, z_wing, fuselage_radius, fin_span = 30.0, -1.5, 3.0, 8.0
+        margins! = TASOPT.structures.fold_ground_margins!
+
+        function make_ground_case(; has_fold = true, max_span = max_span, fin_span = fin_span, Γ = 0.0)
+            wing = TASOPT.structures.Wing()
+            wing.layout.ηs = ηs
+            wing.layout.root_span = ηo * b
+            wing.layout.span = b
+            wing.layout.max_span = max_span
+            wing.layout.z = z_wing
+            wing.layout.root_chord = 6.0
+            wing.layout.sweep = Λ
+            wing.inboard.λ = 0.6
+            wing.outboard.λ = 0.25
+            wing.outboard.cross_section.thickness_to_chord = 0.12
+            wing.outboard.cross_section.web_to_box_height = 0.75
+            wing.outboard.cross_section.width_to_chord = 0.5
+            wing.weight = 1.0e5
+            wing.fold.has_fold = has_fold
+            wing.fold.η_fold = η_fold
+
+            fuselage = TASOPT.structures.Fuselage{TASOPT.structures.SingleBubble}()
+            fuselage.layout.cross_section.radius = fuselage_radius
+            vtail = TASOPT.structures.Tail()
+            vtail.layout.span = fin_span
+            landing_gear = TASOPT.structures.LandingGear()
+            landing_gear.wing_dihedral_angle = Γ
+            return wing, fuselage, vtail, landing_gear
+        end
+
+        # Hand calculation: fold station at 70% of the 20 m semi-span, root at 10% of the span
+        y_f = η_fold * b / 2
+        y_o = ηo * b / 2
+        ℓ = (b / 2) * (1 - η_fold)
+        wing_0, _, _, _ = make_ground_case()
+        h_box_eff = TASOPT.structures.fold_station_geometry(wing_0, η_fold).h_box_eff
+
+        @testset "Zero dihedral" begin
+            wing, fuselage, vtail, landing_gear = make_ground_case()
+            @test margins!(wing, fuselage, vtail, landing_gear) === nothing
+
+            z_tip = z_wing + h_box_eff / 2 + ℓ
+            @test y_f ≈ 14.0 && ℓ ≈ 6.0
+            @test wing.fold.ground_span ≈ 28.0 rtol = 1e-12
+            @test wing.fold.span_margin ≈ max_span - 28.0 rtol = 1e-12
+            @test wing.fold.z_tip ≈ z_tip rtol = 1e-12
+            @test wing.fold.height_margin ≈ (fuselage_radius + fin_span) - z_tip rtol = 1e-12
+        end
+
+        @testset "Dihedral raises the hinge and tilts the tip panel" begin
+            Γ = 0.1
+            wing, fuselage, vtail, landing_gear = make_ground_case(Γ = Γ)
+            margins!(wing, fuselage, vtail, landing_gear)
+
+            z_hinge = z_wing + (y_f - y_o) * tan(Γ) + h_box_eff / 2
+            z_tip = z_hinge + ℓ * cos(Γ)
+            @test wing.fold.ground_span ≈ 28.0 rtol = 1e-12
+            @test wing.fold.z_tip ≈ z_tip rtol = 1e-12
+            @test wing.fold.height_margin ≈ (fuselage_radius + fin_span) - z_tip rtol = 1e-12
+
+            # Compared with no dihedral, the hinge rises by the dihedral term and the tip panel loses height
+            flat, _, _, flat_gear = make_ground_case()
+            margins!(flat, fuselage, vtail, flat_gear)
+            @test wing.fold.z_tip ≈ flat.fold.z_tip + (y_f - y_o) * tan(Γ) - ℓ * (1 - cos(Γ)) rtol = 1e-10
+        end
+
+        @testset "Margins change sign" begin
+            # Fin shorter than the folded tip height
+            wing, fuselage, vtail, landing_gear = make_ground_case(fin_span = 1.0)
+            margins!(wing, fuselage, vtail, landing_gear)
+            @test wing.fold.z_tip > fuselage_radius + 1.0
+            @test wing.fold.height_margin < 0.0
+            @test wing.fold.height_margin ≈ (fuselage_radius + 1.0) - wing.fold.z_tip rtol = 1e-12
+
+            # Span limit below the folded span
+            wing, fuselage, vtail, landing_gear = make_ground_case(max_span = 25.0)
+            margins!(wing, fuselage, vtail, landing_gear)
+            @test wing.fold.span_margin ≈ -3.0 rtol = 1e-12
+            @test wing.fold.height_margin > 0.0
+        end
+
+        @testset "No fold" begin
+            wing, fuselage, vtail, landing_gear = make_ground_case(has_fold = false, Γ = 0.1)
+            margins!(wing, fuselage, vtail, landing_gear)
+            @test wing.fold.ground_span == b
+            @test wing.fold.span_margin == max_span - b
+            @test wing.fold.z_tip == 0.0
+            @test wing.fold.height_margin == 0.0
+        end
+
+        @testset "Only the fold is written, and repeated calls give the same result" begin
+            wing, fuselage, vtail, landing_gear = make_ground_case(Γ = 0.1)
+            untouched, fuselage_0, vtail_0, landing_gear_0 = make_ground_case(Γ = 0.1)
+            margins!(wing, fuselage, vtail, landing_gear)
+            first_call = deepcopy(wing.fold)
+            margins!(wing, fuselage, vtail, landing_gear)
+            for name in fieldnames(typeof(first_call))
+                after, before = getfield(wing.fold, name), getfield(first_call, name)
+                if after isa TASOPT.structures.StructuralAlloy
+                    @test all(getfield(after, f) == getfield(before, f) for f in fieldnames(typeof(after)))
+                else
+                    @test after == before
+                end
+            end
+
+            for name in (:root_span, :span, :max_span, :z, :ηs, :root_chord, :sweep)
+                @test getfield(wing.layout, name) == getfield(untouched.layout, name)
+            end
+            @test wing.weight == untouched.weight
+            @test wing.dxW == untouched.dxW
+            @test wing.outboard.weight == untouched.outboard.weight
+            @test vtail.layout.span == vtail_0.layout.span
+            @test vtail.weight == vtail_0.weight
+            @test fuselage.layout.cross_section.radius == fuselage_0.layout.cross_section.radius
+            @test fuselage.layout.cross_section.radius == fuselage_radius
+            @test landing_gear.wing_dihedral_angle == landing_gear_0.wing_dihedral_angle
         end
     end
 end
