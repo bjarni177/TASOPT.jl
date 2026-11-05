@@ -390,7 +390,9 @@ function _size_aircraft!(ac; itermax=35,
             wing.strut.S = 2.0 * cstrut * lstrutp
         end
 
-        # Update wing panel weights
+        # Update wing panel weights. The fold mechanism is deliberately not in these panel weights: wing_weights!
+        # relieves the outboard loads explicitly with the mechanism weight stored in wing.fold. The mechanism is
+        # included in wing.weight and wing.dxW, which are used for the total weight and the balance.
         wing.inboard.weight = Wsinn * (1.0 + fwadd) + rfmax * Wfinn
         wing.outboard.weight = Wsout * (1.0 + fwadd) + rfmax * Wfout
         wing.inboard.dyW = dyWsinn * (1.0 + fwadd) + rfmax * dyWfinn
