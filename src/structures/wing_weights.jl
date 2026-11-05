@@ -77,6 +77,11 @@ end
 Calculates Wing or Tail loads, stresses, weights of individual wing sections.
 Also returns the material gauges, torsional and bending stiffness. Formerly, `get_wing_weights!()`.
 
+When the wing has a folding tip, the outboard loads are relieved by the fold mechanism weight of the previous iteration,
+and the mechanism is sized with the current outboard gauges and stored in `wing.fold`. The fuel outboard of the fold is
+excluded from the outer-panel fuel terms, and the fold mechanism weight is added to the wing weight. `Wfout` is then the fuel weight outboard of the panel break and
+inboard of the fold.
+
 !!! details "🔃 Inputs and Outputs"
     **Inputs:**
     - `wing::TASOPT.structures.Wing`: Wing structure.
@@ -124,10 +129,27 @@ function wing_weights!(wing, po, gammat, gammas,
     wing.outboard.moment = (po * wing.layout.span^2 / 24.0) * (gammas + 2.0 * gammat) * (1.0 - etas)^2 +
                            dMt - Nload * wing.outboard.dyW - Nload * neout * We * dyeout
 
+    # Relief from the fold mechanism weight of the previous iteration (W_fold is for both sides)
+    fold_on = wing isa Wing && wing.fold.has_fold
+    if fold_on
+        wing.outboard.max_shear_load -= Nload * wing.fold.W_fold / 2
+        wing.outboard.moment -= Nload * wing.fold.dyW_fold
+    end
+
     #---- size strut-attach station at etas
     cs = wing.layout.root_chord*wing.inboard.λ
 
     outboard_dims = size_wing_section!(wing.outboard, wing.sweep, sigfac)
+
+    fwadd = wing_additional_weight(wing)
+
+    # Size the fold mechanism with the current outboard gauges; used for the relief of the next iteration
+    if fold_on
+        K_w = (wing.inboard.caps.ρ*outboard_dims.Abcap + wing.inboard.webs.ρ*outboard_dims.Abweb)*gee*(1.0 + fwadd)
+        loads = fold_station_loads(wing, po, gammat, gammas, Nload, K_w)
+        size_fold_mechanism!(wing, loads, sigfac)
+    end
+
     # Inboard Section:
     if(!wing.has_strut) 
         #----- no strut, with or without engine at etas
@@ -229,15 +251,26 @@ function wing_weights!(wing, po, gammat, gammas,
 
     Abfueli= (Abfuelo + Abfuels*wing.inboard.λ^2)/(1.0+wing.inboard.λ^2)
 
+    # The outer-panel fuel excludes the fuel tip outboard of the fold; the structure keeps the full panel
+    if fold_on
+        fuel_fraction = fold_tip_fuel_fraction(wing, wing.fold.η_fold)
+        Vout_fuel = Vout*fuel_fraction
+        # PLACEHOLDER: the volume fraction approximates the sweep term; it is not the exact sweep-moment fraction
+        dxVout_fuel = dxVout*fuel_fraction
+        dyVout_fuel = dyVout*fold_tip_fuel_moment_fraction(wing, wing.fold.η_fold)
+    else
+        Vout_fuel, dxVout_fuel, dyVout_fuel = Vout, dxVout, dyVout
+    end
+
     Wfcen   = rhofuel*Abfuelo *gee*Vcen
     Wfinn   = rhofuel*Abfueli *gee*Vinn
-    Wfout   = rhofuel*Abfuels *gee*Vout
+    Wfout   = rhofuel*Abfuels *gee*Vout_fuel
 
     dxWfinn = rhofuel*Abfueli *gee*dxVinn
-    dxWfout = rhofuel*Abfuels *gee*dxVout
+    dxWfout = rhofuel*Abfuels *gee*dxVout_fuel
 
     dyWfinn = rhofuel*Abfueli *gee*dyVinn
-    dyWfout = rhofuel*Abfuels *gee*dyVout
+    dyWfout = rhofuel*Abfuels *gee*dyVout_fuel
 
     wing.inboard.caps.weight.W   = 2.0*wing.inboard.caps.ρ*gee*(inboard_dims.Abcap*Vcen + Abcapi*Vinn + outboard_dims.Abcap*Vout)
     wing.inboard.webs.weight.W   = 2.0*wing.inboard.webs.ρ*gee*(inboard_dims.Abweb*Vcen + Abwebi*Vinn + outboard_dims.Abweb*Vout)
@@ -254,9 +287,15 @@ function wing_weights!(wing, po, gammat, gammas,
     wing.outboard.caps.thickness = outboard_dims.tbcap
     wing.outboard.webs.thickness = outboard_dims.tbweb
 
-    fwadd = wing_additional_weight(wing)
     Wwing = n_wings * (Wscen + Wsinn + Wsout) * (1.0 + fwadd)
     wing.dxW = n_wings * (dxWsinn + dxWsout) * (1.0 + fwadd)
+
+    # The fold mechanism weight and sweep moment (both wing sides) are added outside the (1 + fwadd) factor;
+    # they are the values just sized in this call
+    if fold_on
+        Wwing += wing.fold.W_fold
+        wing.dxW += wing.fold.dxW_fold
+    end
 
     return Wwing, Wsinn, Wsout, dyWsinn, dyWsout, Wfcen, Wfinn, Wfout,
     dxWfinn, dxWfout, dyWfinn, dyWfout, lsp
