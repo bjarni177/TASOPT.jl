@@ -1,5 +1,6 @@
 """
-`weight_buildup` prints out the weight build up for the aircraft
+`weight_buildup` prints out the weight build up for the aircraft,
+including the folding wingtip mechanism weights when the wing has a fold
 """
 function weight_buildup(ac::aircraft; io=stdout)
     parg = ac.parg
@@ -59,6 +60,16 @@ function weight_buildup(ac::aircraft; io=stdout)
     @printf(io,"--------------------\n")
     printstyled(io, @sprintf("Wwing  = %10.1f N (%8.1f lb)\n\n", Wwing, Wwing/lbf_to_N); color=:bold)
 
+    if wing.fold.has_fold
+        # Wfold is the mechanism total. It is part of wing.weight but not of the box and fractions above.
+        fold = wing.fold
+        @printf(io,"Wfold   + %10.1f N (%8.1f lb)\n", fold.W_fold, fold.W_fold/lbf_to_N)
+        @printf(io,"Whinge  + %10.1f N (%8.1f lb)\n", fold.W_hinge_lugs, fold.W_hinge_lugs/lbf_to_N)
+        @printf(io,"Wlatch  + %10.1f N (%8.1f lb)\n", fold.W_latches, fold.W_latches/lbf_to_N)
+        @printf(io,"Wlintro + %10.1f N (%8.1f lb)\n", fold.W_load_intro, fold.W_load_intro/lbf_to_N)
+        @printf(io,"Wactua  + %10.1f N (%8.1f lb)\n\n", fold.W_actuator, fold.W_actuator/lbf_to_N)
+    end
+
     @printf(io,"Wftnkins  = %10.1f N (%8.1f lb)\n", parg[igWinsftank ], parg[igWinsftank ]/lbf_to_N) 
     @printf(io,"Wftank    = %10.1f N (%8.1f lb)\n\n", parg[igWftank    ], parg[igWftank    ]/lbf_to_N) 
     @printf(io,"lftank    = %10.1f m (%8.1f ft)\n"  , parg[iglftank    ], parg[iglftank    ]/ft_to_m) 
@@ -106,7 +117,8 @@ function aero(ac::aircraft; io = stdout)
 end
 
 """
-`geometry` prints out a numerical description of the aircraft layout
+`geometry` prints out a numerical description of the aircraft layout,
+including the folding wingtip ground span and height margins when the wing has a fold
 """
 function geometry(ac::aircraft; io = stdout)
     parg = ac.parg
@@ -164,5 +176,13 @@ function geometry(ac::aircraft; io = stdout)
     @printf(io, "b       = %5.1f m (%8.1f ft)\n" , wing.layout.span, wing.layout.span/ft_to_m   )
     @printf(io, "S       = %5.1f m²(%8.1f ft²)\n" , wing.layout.S, wing.layout.S/ft_to_m^2 )
 
+    if wing.fold.has_fold
+        fold = wing.fold
+        printstyled(io, "\nFolding Wingtip:\n -------------- \n", color=:bold )
+        @printf(io, "ground span   = %5.1f m (%8.1f ft)\n" , fold.ground_span, fold.ground_span/ft_to_m)
+        @printf(io, "span margin   = %5.1f m (%8.1f ft)\n" , fold.span_margin, fold.span_margin/ft_to_m)
+        @printf(io, "z tip         = %5.1f m (%8.1f ft)\n" , fold.z_tip, fold.z_tip/ft_to_m)
+        @printf(io, "height margin = %5.1f m (%8.1f ft)  (fin top used as reference; a T-tail would change it)\n" , fold.height_margin, fold.height_margin/ft_to_m)
+    end
 
 end

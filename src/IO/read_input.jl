@@ -682,6 +682,7 @@ readfold(x) = read_input(x, fold_i, dfold)
     fold.ground_wind_speed = Speed(readfold("ground_wind_speed"))
     fold.systems_mass = readfold("systems_mass")
     fold.ΔCD_fold_counts = readfold("delta_CD_fold_counts")
+    fold.CD_fold = fold.ΔCD_fold_counts * 1e-4 # 1 drag count = 1e-4
 
     if fold.has_fold
         wing.layout.ηs < fold.η_fold < 1 ||

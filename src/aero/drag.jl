@@ -10,7 +10,7 @@ Formerly, `cdsum!()`.
 The total drag is computed by
 
 ```math
-C_{D} = C_{D, i} + C_{D,fuse} + C_{D,wing} + C_{D,over} + C_{D,htail} + C_{D,vtail} + C_{D,strut} + C_{D,nace} + \\Delta C_{D,BLI,f} + \\Delta C_{D,BLI,w}
+C_{D} = C_{D, i} + C_{D,fuse} + C_{D,wing} + C_{D,over} + C_{D,htail} + C_{D,vtail} + C_{D,strut} + C_{D,nace} + \\Delta C_{D,BLI,f} + \\Delta C_{D,BLI,w} + C_{D,fold}
 ```
 
 where:
@@ -23,7 +23,8 @@ where:
 - ``C_{D,strut}`` (`CDstrut`) is the strut profile drag, 
 - ``C_{D,nace}`` (`CDnace`) is the nacelle profile drag,
 - ``\\Delta C_{D,BLI,f}`` (`dCDBLIf`) is related to the boundary layer ingestion on the fuselage,
-- and ``\\Delta C_{D,BLI,w}`` (`dCDBLIw`) is related to the boundary layer ingestion on the wing.
+- ``\\Delta C_{D,BLI,w}`` (`dCDBLIw`) is related to the boundary layer ingestion on the wing,
+- and ``C_{D,fold}`` (`wing.fold.CD_fold`) is the fold hinge drag, only included if `wing.fold.has_fold` is `true`.
 
 
 !!! details "🔃 Inputs and Outputs"
@@ -226,6 +227,9 @@ function aircraft_drag!(ac, imission::Int, ip::Int, computes_wing_direct::Bool; 
 #- - - - - - - - - - - - - - - - - - - - - - - - - - - -
 #---- total CD
       CD = CDi + CDfuse + CDwing + CDover + CDhtail + CDvtail + CDstrut + CDnace + dCDBLIf + dCDBLIw
+      if wing.fold.has_fold
+            CD += wing.fold.CD_fold
+      end
       para[iaCD] = CD      
 
       return

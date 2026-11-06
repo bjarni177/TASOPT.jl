@@ -1,3 +1,5 @@
+using Printf
+
 @testset "Folding wing structures" verbose=true begin
     database = TASOPT.materials.MaterialProperties
 
@@ -158,7 +160,27 @@
 
         @testset "Inputs without a FoldingTip block" begin
             for name in ("default_regional.toml", "default_wide.toml")
-                test_starting_values(read_quietly(joinpath(defaults_dir, name)).wing.fold)
+                input = TOML.parsefile(joinpath(defaults_dir, name))
+                delete!(input["Wing"], "FoldingTip")
+                mktempdir() do dir
+                    path = joinpath(dir, "no_fold_block.toml")
+                    open(io -> TOML.print(io, input), path, "w")
+                    test_starting_values(read_quietly(path).wing.fold)
+                end
+            end
+        end
+
+        @testset "Shipped inputs have a FoldingTip block with folding off" begin
+            example_dir = joinpath(TASOPT.__TASOPTroot__, "../example")
+            expected_keys = keys(TOML.parsefile(default_input)["Wing"]["FoldingTip"])
+            for path in (joinpath(defaults_dir, "default_regional.toml"),
+                         joinpath(defaults_dir, "default_wide.toml"),
+                         joinpath(example_dir, "cryo_input.toml"))
+                wing = TOML.parsefile(path)["Wing"]
+                @test haskey(wing, "FoldingTip")
+                block = get(wing, "FoldingTip", Dict{String, Any}())
+                @test get(block, "has_fold", nothing) === false
+                @test Set(keys(block)) == Set(expected_keys)
             end
         end
     end
@@ -833,6 +855,35 @@
         end
     end
 
+    @testset "Ground margins after sizing" begin
+        path_folding = joinpath(TASOPT.__TASOPTroot__, "../example/defaults/default_folding_wing.toml")
+        sized_margins(ac) = (size_aircraft!(ac; printiter = false); ac.wing.fold)
+
+        @testset "Without folding" begin
+            ac = load_default_model()
+            fold = sized_margins(ac)
+            @test fold.ground_span == ac.wing.layout.span
+            @test fold.span_margin == ac.wing.layout.max_span - ac.wing.layout.span
+            @test fold.z_tip == 0.0
+            @test fold.height_margin == 0.0
+        end
+
+        @testset "With folding" begin
+            ac = read_aircraft_model(path_folding)
+            fold = sized_margins(ac)
+            @test fold.has_fold
+            @test fold.ground_span ≈ fold.η_fold * ac.wing.layout.span rtol = 1e-12
+            @test fold.span_margin ≈ ac.wing.layout.max_span - fold.ground_span rtol = 1e-12
+            @test fold.z_tip > 0.0
+
+            # Same margins as evaluating the sized aircraft again
+            sized = deepcopy(fold)
+            TASOPT.structures.fold_ground_margins!(ac.wing, ac.fuselage, ac.vtail, ac.landing_gear)
+            @test fold.z_tip == sized.z_tip
+            @test fold.height_margin == sized.height_margin
+        end
+    end
+
     @testset "Folding in wing_weights!" begin
         po, γt, γs, Nload, sigfac = 1.1e5, 0.225, 0.8666, 3.0, 1.0
         weights!(wing) = TASOPT.structures.wing_weights!(wing, po, γt, γs, Nload, 3e4, 0, 0.0, 0, 0.0, sigfac, 817.0)
@@ -951,6 +1002,76 @@
             folded.fold.η_fold = 0.999
             @test TASOPT.structures.fold_tip_fuel_fraction(folded, 0.999) > 0.99
             @test weights!(folded)[8] ≈ weights!(fixed)[8] rtol = 1e-2
+        end
+    end
+
+    @testset "Fold text outputs" begin
+        path_folding = joinpath(TASOPT.__TASOPTroot__, "../example/defaults/default_folding_wing.toml")
+        text_of(print_function, ac) = (io = IOBuffer(); print_function(ac; io = io); String(take!(io)))
+        # The line of the text that starts with a label
+        line_of(text, label) = get(filter(line -> startswith(line, label), split(text, '\n')), 1, "")
+
+        @testset "Without folding" begin
+            ac = load_default_model()
+            size_aircraft!(ac; printiter = false)
+            weights_text = text_of(TASOPT.weight_buildup, ac)
+            geometry_text = text_of(TASOPT.geometry, ac)
+            @test !occursin("Wfold", weights_text)
+            @test !occursin("Folding Wingtip", geometry_text)
+        end
+
+        @testset "With folding" begin
+            ac = read_aircraft_model(path_folding)
+            size_aircraft!(ac; printiter = false)
+            fold = ac.wing.fold
+
+            weights_text = text_of(TASOPT.weight_buildup, ac)
+            for (label, weight) in (("Wfold", fold.W_fold), ("Whinge", fold.W_hinge_lugs),
+                                    ("Wlatch", fold.W_latches), ("Wlintro", fold.W_load_intro),
+                                    ("Wactua", fold.W_actuator))
+                @test occursin(@sprintf("%10.1f", weight), line_of(weights_text, label))
+            end
+
+            geometry_text = text_of(TASOPT.geometry, ac)
+            @test occursin("Folding Wingtip", geometry_text)
+            @test occursin(@sprintf("%.1f", fold.ground_span), line_of(geometry_text, "ground span"))
+            @test occursin(@sprintf("%.1f", fold.span_margin), line_of(geometry_text, "span margin"))
+            @test occursin(@sprintf("%.1f", fold.z_tip), line_of(geometry_text, "z tip"))
+            @test occursin(@sprintf("%.1f", fold.height_margin), line_of(geometry_text, "height margin"))
+            @test occursin("T-tail", line_of(geometry_text, "height margin"))
+        end
+    end
+
+    @testset "size_aircraft! with folding on" begin
+        path_folding = joinpath(TASOPT.__TASOPTroot__, "../example/defaults/default_folding_wing.toml")
+        ac = read_aircraft_model(path_folding)
+        size_aircraft!(ac; printiter = false)
+        fold = ac.wing.fold
+
+        @testset "Reference values" begin
+            @test ac.parg[igWMTO] ≈ 907804.0155108807 rtol = 1e-4
+            @test ac.parm[imPFEI] ≈ 0.9656839269615151 rtol = 1e-4
+
+            reference = (S_fold = 214169.10420426168, M_fold = 534575.044006494, F_cap = 2.344412343085197e6,
+                         W_hinge_lugs = 111.3199866634155, W_latches = 110.62828095647654,
+                         W_load_intro = 750.2362734549972, W_actuator = 0.0, W_fold = 972.1845410748892,
+                         dyW_fold = 3857.6077497289934, dxW_fold = 5492.053750951284,
+                         ground_span = 26.771905857958696, span_margin = 9.042094142041304,
+                         z_tip = 4.206312463266219, height_margin = 5.892782088725191)
+            for (name, value) in pairs(reference)
+                @test getfield(fold, name) ≈ value rtol = 1e-4
+            end
+        end
+
+        @testset "Relations between the results" begin
+            @test fold.W_fold > 0.0
+            components = fold.W_hinge_lugs + fold.W_latches + fold.W_load_intro + fold.W_actuator
+            @test fold.W_fold ≈ components + 2 * TASOPT.gee * fold.systems_mass rtol = 1e-12
+
+            # The folded tip panel holds no fuel, so the tank is smaller than for the default model with folding off
+            ac_no_fold = load_default_model()
+            size_aircraft!(ac_no_fold; printiter = false)
+            @test ac.parg[igWfmax] < ac_no_fold.parg[igWfmax]
         end
     end
 end

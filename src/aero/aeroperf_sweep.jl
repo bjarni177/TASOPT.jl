@@ -28,7 +28,7 @@ This function deep-copies the input aircraft model, sets the lift coefficient, b
         - `LDs`: Lift-to-drag ratios.
         - `CLhs`: Horizontal tail lift coefficients.
         - `CDis`: Induced drag coefficients.
-        - `CDwings`, `CDfuses`, `CDhtails`, `CDvtails`, `CDothers`: Component drag breakdowns.
+        - `CDwings`, `CDfuses`, `CDhtails`, `CDvtails`, `CDothers`: Component drag breakdowns. `CDothers` includes strut, nacelle, BLI and (if folding is on) fold hinge drag.
         - `clpos`, `clpss`, `clpts`: airfoil section lift coefficients (root, spanbreak, and tip).
 
     Sample usage:
@@ -98,6 +98,9 @@ function aeroperf_sweep(ac_orig, CL_range; Mach=nothing, imission=1, ip=ipcruise
                                 ac.para[iaCDnace, ip, imission] + #nacelle drag
                                 ac.para[iadCDBLIf, ip, imission] + #fuse bli "drag" effect
                                 ac.para[iadCDBLIw, ip, imission] #wing bli "drag" effect
+        if ac.wing.fold.has_fold
+            results.CDothers[i] += ac.wing.fold.CD_fold #fold hinge drag
+        end
 
         #get max clp for airfoil bounds
         results.clpos[i] = ac.para[iaclpo, ip, imission]

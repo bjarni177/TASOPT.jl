@@ -721,6 +721,9 @@ function _size_aircraft!(ac; itermax=35,
     balance_aircraft!(ac, imission, ip, rfuel, rpay, ξpay, opt_trim_var;
                         Ldebug = Ldebug)
 
+    # Ground span and height margins are reported only, not enforced
+    fold_ground_margins!(wing, fuse, vtail, landing_gear)
+
     #Check if all engine points have converged, warn if not
     check_engine_convergence_failure(pare)
     
