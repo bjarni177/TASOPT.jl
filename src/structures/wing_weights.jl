@@ -71,14 +71,48 @@ function size_wing_section!(section, sweep, sigfac)
 end
 
 """
+    size_outboard_with_fold!(wing, po, gammat, gammas, Nload, sigfac, fwadd; rtol=1e-8, max_passes=20)
+
+Sizes the outboard wing section together with the fold mechanism of a folding wing tip and returns the outboard
+section dimensions. The outboard loads in `wing.outboard` are on entry the loads without the fold mechanism weight.
+The fold mechanism weight relieves these loads (`wing.fold.W_fold` is for both wing sides), and the mechanism is sized with
+the resulting outboard gauges. The two are repeated until `W_fold` and `dyW_fold` change by less than `rtol`
+(relative), or for `max_passes` passes. On return, `wing.outboard` holds the relieved loads and `wing.fold` the sized mechanism.
+"""
+function size_outboard_with_fold!(wing, po, gammat, gammas, Nload, sigfac, fwadd; rtol=1e-8, max_passes=20)
+    shear_unrelieved = wing.outboard.max_shear_load
+    moment_unrelieved = wing.outboard.moment
+
+    outboard_dims = nothing
+    for _ in 1:max_passes
+        W_prev, dyW_prev = wing.fold.W_fold, wing.fold.dyW_fold
+
+        wing.outboard.max_shear_load = shear_unrelieved - Nload * W_prev / 2
+        wing.outboard.moment = moment_unrelieved - Nload * dyW_prev
+        outboard_dims = size_wing_section!(wing.outboard, wing.sweep, sigfac)
+
+        K_w = (wing.inboard.caps.ρ*outboard_dims.Abcap + wing.inboard.webs.ρ*outboard_dims.Abweb)*gee*(1.0 + fwadd)
+        loads = fold_station_loads(wing, po, gammat, gammas, Nload, K_w)
+        size_fold_mechanism!(wing, loads, sigfac, outboard_dims.tbcap)
+
+        if abs(wing.fold.W_fold - W_prev) <= rtol * abs(wing.fold.W_fold) &&
+           abs(wing.fold.dyW_fold - dyW_prev) <= rtol * abs(wing.fold.dyW_fold)
+            break
+        end
+    end
+    return outboard_dims
+end
+
+"""
     wing_weights!(wing, po, gammat, gammas, 
        Nload, We, neout, dyeout, neinn, dyeinn, sigfac, rhofuel; n_wings=2.0)
 
 Calculates Wing or Tail loads, stresses, weights of individual wing sections.
 Also returns the material gauges, torsional and bending stiffness. Formerly, `get_wing_weights!()`.
 
-When the wing has a folding tip, the outboard loads are relieved by the fold mechanism weight of the previous iteration,
-and the mechanism is sized with the current outboard gauges and stored in `wing.fold`. The fuel outboard of the fold is
+When the wing has a folding tip, the outboard loads are relieved by the fold mechanism weight, and the mechanism is
+sized with the resulting outboard gauges and stored in `wing.fold`. The two are iterated within this function until
+they are consistent (see `size_outboard_with_fold!`). The fuel outboard of the fold is
 excluded from the outer-panel fuel terms, and the fold mechanism weight is added to the wing weight. `Wfout` is then the fuel weight outboard of the panel break and
 inboard of the fold.
 
@@ -129,25 +163,17 @@ function wing_weights!(wing, po, gammat, gammas,
     wing.outboard.moment = (po * wing.layout.span^2 / 24.0) * (gammas + 2.0 * gammat) * (1.0 - etas)^2 +
                            dMt - Nload * wing.outboard.dyW - Nload * neout * We * dyeout
 
-    # Relief from the fold mechanism weight of the previous iteration (W_fold is for both sides)
     fold_on = wing isa Wing && wing.fold.has_fold
-    if fold_on
-        wing.outboard.max_shear_load -= Nload * wing.fold.W_fold / 2
-        wing.outboard.moment -= Nload * wing.fold.dyW_fold
-    end
 
     #---- size strut-attach station at etas
     cs = wing.layout.root_chord*wing.inboard.λ
 
-    outboard_dims = size_wing_section!(wing.outboard, wing.sweep, sigfac)
-
     fwadd = wing_additional_weight(wing)
 
-    # Size the fold mechanism with the current outboard gauges; used for the relief of the next iteration
     if fold_on
-        K_w = (wing.inboard.caps.ρ*outboard_dims.Abcap + wing.inboard.webs.ρ*outboard_dims.Abweb)*gee*(1.0 + fwadd)
-        loads = fold_station_loads(wing, po, gammat, gammas, Nload, K_w)
-        size_fold_mechanism!(wing, loads, sigfac)
+        outboard_dims = size_outboard_with_fold!(wing, po, gammat, gammas, Nload, sigfac, fwadd)
+    else
+        outboard_dims = size_wing_section!(wing.outboard, wing.sweep, sigfac)
     end
 
     # Inboard Section:

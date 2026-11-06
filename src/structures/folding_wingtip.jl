@@ -206,15 +206,49 @@ function size_fold_actuator(wing::Wing, loads)
 end
 
 """
-    size_fold_mechanism!(wing::Wing, loads, sigfac)
+    fold_cap_strength(wing::Wing, t_cap, sigfac) -> Float64
+
+Force capacity of one wing-box cap at the fold, `σ_cap t_cap w̄ c_perp_f²`, before the fitting factor. The allowable
+cap stress is `σ_cap = wing.outboard.caps.material.σmax sigfac`, `t_cap` is the outboard cap thickness normalised by the
+chord perpendicular to the sweep (`tbcap` from [`size_wing_section!`](@ref)), `w̄ = wing.outboard.cross_section.width_to_chord`
+is the box width over the chord and `c_perp_f` is the chord at the fold station perpendicular to the sweep from
+[`fold_station_geometry`](@ref).
+
+The outboard gauges are sized at the panel break and kept to the tip, so the cap at the fold is stronger than the fold
+loads require. A joint matched to the strength of the box it joins is therefore an upper bound on the joint size, while
+a joint sized for the fold loads alone is a lower bound. [`size_fold_mechanism!`](@ref) uses the larger of the two.
+
+!!! details "🔃 Inputs and Outputs"
+    **Inputs:**
+    - `wing::TASOPT.structures.Wing`: Wing structure, with the folding wing tip `wing.fold`.
+    - `t_cap::Float64`: Outboard cap thickness normalised by the chord perpendicular to the sweep [-].
+    - `sigfac::Float64`: Stress factor applied to the allowable stresses (as in the wing box).
+
+    **Outputs:**
+    - `Float64`: Force capacity of one wing-box cap at the fold [N].
+"""
+function fold_cap_strength(wing::Wing, t_cap, sigfac)
+    σ_cap = wing.outboard.caps.material.σmax * sigfac
+    w̄ = wing.outboard.cross_section.width_to_chord
+    c_perp_f = fold_station_geometry(wing, wing.fold.η_fold).c_perp_f
+
+    return σ_cap * t_cap * w̄ * c_perp_f^2
+end
+
+"""
+    size_fold_mechanism!(wing::Wing, loads, sigfac, t_cap)
 
 Sizes the fold mechanism of the folding wing tip from the loads at the fold station, and stores the loads and weights
 in the outputs of `wing.fold`. It writes only to `wing.fold`.
 
-The wing-box cap force couple is `F_cap = abs(fitting_factor M_hinge / h_box_eff)`, where `M_hinge = M_f / cos(Λ)` is the
-bending moment about the hinge line, which is perpendicular to the sweep, and `h_box_eff` is the effective box depth at
-the fold station from [`fold_station_geometry`](@ref). A negative `M_f`, where the tip weight relief exceeds the aerodynamic
-moment, still loads the caps, which must resist it, so `F_cap` uses its magnitude. The weight per wing side is the sum of the hinge pins and lugs
+The hinge is streamwise, as on the 777X, which is consistent with the spanwise fold station and the ground span `2 y_f`.
+The wing-box cap force couple has two candidates. The load-based force is `F_cap_load = abs(M_hinge / h_box_eff)`, where
+`M_hinge = M_f / cos(Λ)` is the bending moment in the plane perpendicular to the sweep, as in the wing box, which is
+conservative for the streamwise hinge, and `h_box_eff` is the effective box depth at the fold station from
+[`fold_station_geometry`](@ref). A negative `M_f`, where the tip weight relief exceeds the aerodynamic moment, still
+loads the caps, which must resist it, so `F_cap_load` uses the magnitude. The strength-based force `F_cap_strength` is the
+force capacity of the outboard cap at the fold from [`fold_cap_strength`](@ref). The more restrictive of the two governs,
+`F_cap = fitting_factor max(F_cap_load, F_cap_strength)`. The weight per wing side is the sum of the hinge pins and lugs
 (which carry the resultant of `F_cap` and the shear `S_f`, sized with [`size_pinned_joint`](@ref)), the latches
 ([`size_latches`](@ref)), the load introduction structure ([`size_load_introduction`](@ref), with ribs of the wing-box
 cap material), the actuator ([`size_fold_actuator`](@ref)) and the fold systems, `fold.systems_mass` per wing side.
@@ -227,17 +261,19 @@ The bending relief `dyW_fold` is per wing side. The sweep offset `dxW_fold` is f
     - `wing::TASOPT.structures.Wing`: Wing structure, with the folding wing tip `wing.fold`.
     - `loads::NamedTuple`: Fold station loads from [`fold_station_loads`](@ref), of which `S_f`, `M_f`, `W_tip` and `dyW_tip` are used.
     - `sigfac::Float64`: Stress factor applied to the allowable stresses (as in the wing box).
+    - `t_cap::Float64`: Outboard cap thickness normalised by the chord perpendicular to the sweep, `tbcap` from [`size_wing_section!`](@ref) [-].
 
     **Outputs:** (stored in `wing.fold`)
     - `S_fold::Float64`: Shear at the fold station, per wing side [N].
     - `M_fold::Float64`: Bending moment at the fold station, per wing side [N⋅m].
     - `F_cap::Float64`: Wing-box cap force couple at the fold, including the fitting factor [N].
+    - `F_cap_strength::Float64`: Force capacity of one wing-box cap at the fold, before the fitting factor [N].
     - `W_hinge_lugs::Float64`, `W_latches::Float64`, `W_load_intro::Float64`, `W_actuator::Float64`: Component weights, both wing sides [N].
     - `W_fold::Float64`: Total fold mechanism weight, both wing sides [N].
     - `dyW_fold::Float64`: Bending relief of the fold weight about the break station, per wing side [N⋅m].
     - `dxW_fold::Float64`: Moment of the total fold weight about the wing root from the sweep offset, both wing sides [N⋅m].
 """
-function size_fold_mechanism!(wing::Wing, loads, sigfac)
+function size_fold_mechanism!(wing::Wing, loads, sigfac, t_cap)
     fold = wing.fold
     layout = wing.layout
     b = layout.span
@@ -245,7 +281,9 @@ function size_fold_mechanism!(wing::Wing, loads, sigfac)
     geometry = fold_station_geometry(wing, fold.η_fold)
 
     M_hinge = loads.M_f / cosd(Λ)
-    F_cap = abs(fold.fitting_factor * M_hinge / geometry.h_box_eff)
+    F_cap_load = abs(M_hinge / geometry.h_box_eff)
+    F_cap_strength = fold_cap_strength(wing, t_cap, sigfac)
+    F_cap = fold.fitting_factor * max(F_cap_load, F_cap_strength)
 
     # The hinge pins carry the resultant of the cap force and the shear
     W_hinge_lugs, _ = size_pinned_joint(hypot(F_cap, loads.S_f), fold.n_hinge, fold, sigfac)
@@ -258,6 +296,7 @@ function size_fold_mechanism!(wing::Wing, loads, sigfac)
     fold.S_fold = loads.S_f
     fold.M_fold = loads.M_f
     fold.F_cap = F_cap
+    fold.F_cap_strength = F_cap_strength
     fold.W_hinge_lugs = 2 * W_hinge_lugs
     fold.W_latches = 2 * W_latches
     fold.W_load_intro = 2 * W_load_intro

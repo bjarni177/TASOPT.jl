@@ -14,7 +14,7 @@ $TYPEDFIELDS
     η_fold::Float64 = 0.0
     """Number of hinges"""
     n_hinge::Int = 0
-    """Number of latches"""
+    """Number of latches, at least 2 so that no single failure unlocks the tip in flight"""
     n_latch::Int = 0
     """Fitting factor on fittings (14 CFR 25.625) [-]"""
     fitting_factor::Float64 = 0.0
@@ -36,7 +36,7 @@ $TYPEDFIELDS
     fitting_length_factor::Float64 = 0.0
     """PLACEHOLDER input: minimum rib gauge thickness [m]"""
     rib_min_gauge::Float64 = 0.0
-    """PLACEHOLDER input: actuator mass per unit hinge torque [kg/(N m)]"""
+    """PLACEHOLDER input: actuator mass per unit hinge moment [kg/(N m)]. The shipped inputs use 0.01 (100 N m/kg) from industrial steel/iron helical hydraulic rotary actuators (Eckart SM4: 69-100 N m/kg; Moveco RR.58: 12.7 kN m, 185 kg), an aerospace actuator is expected to be lighter"""
     actuator_torque_density::Float64 = 0.0
     """Ground wind speed for the hinge load case [m/s]"""
     ground_wind_speed::Float64 = 0.0
@@ -52,6 +52,8 @@ $TYPEDFIELDS
     M_fold::Float64 = 0.0
     """Wing-box cap force couple at the fold, including the fitting factor [N]"""
     F_cap::Float64 = 0.0
+    """Force capacity of one wing-box cap at the fold, before the fitting factor [N]"""
+    F_cap_strength::Float64 = 0.0
     """Hinge and lug weight [N]"""
     W_hinge_lugs::Float64 = 0.0
     """Latch weight [N]"""

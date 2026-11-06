@@ -688,7 +688,9 @@ readfold(x) = read_input(x, fold_i, dfold)
         wing.layout.ηs < fold.η_fold < 1 ||
             error("Wing.FoldingTip fold_location must lie between panel_break_location and 1")
         fold.n_hinge >= 1 || error("Wing.FoldingTip n_hinge must be at least 1")
-        fold.n_latch >= 1 || error("Wing.FoldingTip n_latch must be at least 1")
+        # The 777-8/-9 folding wingtip special conditions (Federal Register 2018-10576, condition 10) require that no
+        # single failure, including of any single structural element, unlocks the tip in flight
+        fold.n_latch >= 2 || error("Wing.FoldingTip n_latch must be at least 2")
         fold.fitting_factor >= 1 || error("Wing.FoldingTip fitting_factor must be at least 1")
     end
 

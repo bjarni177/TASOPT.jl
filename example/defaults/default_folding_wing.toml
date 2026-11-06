@@ -300,16 +300,18 @@
     has_fold = true        # Wingtip folds (true) or is fixed (false)
     fold_location = 0.7    # Span fraction of the fold hinge line, between panel_break_location and 1
     n_hinge = 1            # Number of hinges
-    n_latch = 1            # Number of latches
+    n_latch = 3            # Number of latches, at least 2 (fail-safe, FAA special conditions 25-17-02-SC)
     fitting_factor = 1.15  # Fitting factor on fittings (14 CFR 25.625), at least 1
     pin_material = "300M"  # Pin alloy
     lug_material = "300M"  # Lug alloy
     fitting_material = "Ti-6Al-4V" # Fitting alloy
     lug_R_over_d = 1.5     # Lug outer radius over pin diameter
-    lug_L_over_d = 1.5     # Lug thickness over pin diameter
+    lug_L_over_d = 1.5     # Lug length from pin centre to base over pin diameter
     fitting_length_factor = 3.0 # Fitting length over local wing box height
-    rib_min_gauge = "0.0 mm" # Minimum rib gauge thickness
-    actuator_torque_density = 0.0 # PLACEHOLDER: actuator mass per unit hinge torque [kg/(N m)]
+    rib_min_gauge = "1.5 mm" # PLACEHOLDER minimum rib gauge thickness
+    # PLACEHOLDER: actuator mass per unit hinge moment [kg/(N m)], 100 N m/kg from industrial steel/iron helical hydraulic
+    # rotary actuators (Eckart SM4 datasheet: 69-100 N m/kg; Moveco RR.58: 12.7 kN m, 185 kg). An aerospace actuator is expected to be lighter.
+    actuator_torque_density = 0.01
     ground_wind_speed = "65 kts"  # Ground wind speed for the hinge load case
     systems_mass = 0.0     # Fold systems mass (controls, sensors, wiring) [kg]
     delta_CD_fold_counts = 0.0 # Fold drag increment [drag counts]
