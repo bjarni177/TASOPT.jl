@@ -28,7 +28,7 @@ This function deep-copies the input aircraft model, sets the lift coefficient, b
         - `LDs`: Lift-to-drag ratios.
         - `CLhs`: Horizontal tail lift coefficients.
         - `CDis`: Induced drag coefficients.
-        - `CDwings`, `CDfuses`, `CDhtails`, `CDvtails`, `CDothers`: Component drag breakdowns. `CDothers` includes strut, nacelle, BLI and (if folding is on) fold hinge drag.
+        - `CDwings`, `CDfuses`, `CDhtails`, `CDvtails`, `CDothers`: Component drag breakdowns. `CDothers` includes strut, nacelle, BLI and fold hinge drag.
         - `clpos`, `clpss`, `clpts`: airfoil section lift coefficients (root, spanbreak, and tip).
 
     Sample usage:

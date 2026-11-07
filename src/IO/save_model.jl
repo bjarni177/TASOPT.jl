@@ -281,7 +281,7 @@ function save_aircraft_model(ac::TASOPT.aircraft=TASOPT.read_aircraft_model(),
         d_wing_weight["attachments"] = wing.weight_frac_attachments
     d_wing["Weightfracs"] = d_wing_weight
 
-    #Folding wingtip (inputs only; sigma_br_pin and sigma_br_lug are derived from the alloys on read)
+    #Folding wingtip
     fold = wing.fold
     d_wing_fold = Dict()
         d_wing_fold["has_fold"] = fold.has_fold

@@ -73,11 +73,9 @@ end
 """
     size_outboard_with_fold!(wing, po, gammat, gammas, Nload, sigfac, fwadd; rtol=1e-8, max_passes=20)
 
-Sizes the outboard wing section together with the fold mechanism of a folding wing tip and returns the outboard
-section dimensions. The outboard loads in `wing.outboard` are on entry the loads without the fold mechanism weight.
-The fold mechanism weight relieves these loads (`wing.fold.W_fold` is for both wing sides), and the mechanism is sized with
-the resulting outboard gauges. The two are repeated until `W_fold` and `dyW_fold` change by less than `rtol`
-(relative), or for `max_passes` passes. On return, `wing.outboard` holds the relieved loads and `wing.fold` the sized mechanism.
+Sizes the outboard wing section together with the fold mechanism and returns the outboard section dimensions.
+The fold mechanism weight relieves the outboard loads, and the mechanism is sized with the resulting outboard gauges.
+This is repeated until `W_fold` and `dyW_fold` change by less than `rtol` (relative), or for `max_passes` passes.
 """
 function size_outboard_with_fold!(wing, po, gammat, gammas, Nload, sigfac, fwadd; rtol=1e-8, max_passes=20)
     shear_unrelieved = wing.outboard.max_shear_load
@@ -110,11 +108,9 @@ end
 Calculates Wing or Tail loads, stresses, weights of individual wing sections.
 Also returns the material gauges, torsional and bending stiffness. Formerly, `get_wing_weights!()`.
 
-When the wing has a folding tip, the outboard loads are relieved by the fold mechanism weight, and the mechanism is
-sized with the resulting outboard gauges and stored in `wing.fold`. The two are iterated within this function until
-they are consistent (see `size_outboard_with_fold!`). The fuel outboard of the fold is
-excluded from the outer-panel fuel terms, and the fold mechanism weight is added to the wing weight. `Wfout` is then the fuel weight outboard of the panel break and
-inboard of the fold.
+With a folding tip, the outboard loads are relieved by the fold mechanism weight, which is sized and stored in
+`wing.fold` (see `size_outboard_with_fold!`) and added to the wing weight. The fuel outboard of the fold is excluded from
+the outer-panel fuel terms.
 
 !!! details "🔃 Inputs and Outputs"
     **Inputs:**
@@ -277,11 +273,11 @@ function wing_weights!(wing, po, gammat, gammas,
 
     Abfueli= (Abfuelo + Abfuels*wing.inboard.λ^2)/(1.0+wing.inboard.λ^2)
 
-    # The outer-panel fuel excludes the fuel tip outboard of the fold; the structure keeps the full panel
+    # The fuel tank stops at the fold; the structure keeps the full panel
     if fold_on
         fuel_fraction = fold_tip_fuel_fraction(wing, wing.fold.η_fold)
         Vout_fuel = Vout*fuel_fraction
-        # PLACEHOLDER: the volume fraction approximates the sweep term; it is not the exact sweep-moment fraction
+        # PLACEHOLDER: the volume fraction approximates the sweep term
         dxVout_fuel = dxVout*fuel_fraction
         dyVout_fuel = dyVout*fold_tip_fuel_moment_fraction(wing, wing.fold.η_fold)
     else
@@ -316,8 +312,7 @@ function wing_weights!(wing, po, gammat, gammas,
     Wwing = n_wings * (Wscen + Wsinn + Wsout) * (1.0 + fwadd)
     wing.dxW = n_wings * (dxWsinn + dxWsout) * (1.0 + fwadd)
 
-    # The fold mechanism weight and sweep moment (both wing sides) are added outside the (1 + fwadd) factor;
-    # they are the values just sized in this call
+    # The fold mechanism weight and sweep moment (both wing sides) are outside the (1 + fwadd) factor
     if fold_on
         Wwing += wing.fold.W_fold
         wing.dxW += wing.fold.dxW_fold

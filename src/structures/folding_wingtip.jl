@@ -1,15 +1,9 @@
-# Structural loads on a folding wing tip: the loads acting at the fold station of the outer wing panel.
-
 """
     fold_station_loads(wing::Wing, po, γt, γs, Nload, K_w) -> NamedTuple
 
 Calculates the shear and bending moment at the fold station `wing.fold.η_fold`, per wing side, from the lift and the
-structural weight of the wing outboard of the fold (the folding wing tip). The lift is the linear outer-panel
-loading used in [`wing_weights!`](@ref), including the tip roll-off point load at the tip, and the weight is the
-wing structure only, integrated with the same outer-panel expressions as in `wing_weights!`. The weight does not
-include fuel, engines or the fold mechanism. The fold station geometry is given by [`fold_station_geometry`](@ref).
-
-The tip weight is `K_w c_o² cos(Λ) ∫ λ² dy` over the tip, where `λ = c / c_o` is the local chord ratio.
+structural weight of the wing outboard of the fold. The lift is the outer-panel loading of [`wing_weights!`](@ref),
+including the tip roll-off point load. The weight excludes fuel, engines and the fold mechanism.
 
 !!! details "🔃 Inputs and Outputs"
     **Inputs:**
@@ -59,33 +53,29 @@ end
 """
     size_pinned_joint(F, n, fold::FoldingWingTip, sigfac) -> (W, details)
 
-Sizes `n` identical pins and their lugs that together carry the force `F`, and returns the weight of the joint
-per wing side. The pins are in double shear and the lug thickness is set by the bearing stress, with the allowable
-stresses scaled by `sigfac` as in the wing box. The lug is a semicircular end of radius `R` with a base of length `L`
-and a pin hole of diameter `d`. This is the single function that [`size_latches`](@ref) and the hinge sizing in
-[`size_fold_mechanism!`](@ref) use, so an alternative joint sizing method replaces only this function.
-
-The pin diameter is `d = √(2F / (n π τ_allow))` and the lug thickness is `t = F / (n d σ_br_allow)`. The lug radius and
-length are `R = lug_R_over_d d` and `L = lug_L_over_d d`. A zero force gives a joint of zero weight and zero dimensions.
+Sizes `n` identical pins and lugs that together carry the force `F`, and returns the joint weight per wing side.
+The pins are in double shear and the lug thickness is set by the bearing stress, with the allowable stresses scaled
+by `sigfac` as in the wing box. The pin diameter is `d = √(2F / (n π τ_allow))` and the lug thickness is
+`t = F / (n d σ_br_allow)`. A zero force gives a zero weight joint. Used by [`size_latches`](@ref) and
+[`size_fold_mechanism!`](@ref).
 
 !!! details "🔃 Inputs and Outputs"
     **Inputs:**
     - `F::Float64`: Total force carried by the joint [N].
     - `n::Int`: Number of pins sharing the force.
-    - `fold::TASOPT.structures.FoldingWingTip`: Folding wing tip, providing the pin and lug materials, bearing strengths and lug proportions.
-    - `sigfac::Float64`: Stress factor applied to the allowable stresses (as in the wing box).
+    - `fold::TASOPT.structures.FoldingWingTip`: Folding wing tip.
+    - `sigfac::Float64`: Stress factor.
 
     **Outputs:**
     - `W::Float64`: Weight of the pins and lugs per wing side [N].
     - `details::NamedTuple`: Pin diameter `d`, lug thickness `t`, lug radius `R` and lug length `L` [m].
 """
 function size_pinned_joint(F, n, fold::FoldingWingTip, sigfac)
-    # No force needs no joint; the pin diameter formula below would otherwise divide by zero
+    # Avoids dividing by zero in the pin diameter
     F == 0 && return 0.0, (; d = 0.0, t = 0.0, R = 0.0, L = 0.0)
 
     ultimate_factor = 1.5 # Ultimate to limit load factor, as in the wing box safety factor
-    # PLACEHOLDER: the lug stack is a middle lug of thickness t between two clevis ears of t/2 each,
-    # and the pin is as long as the stack
+    # PLACEHOLDER: lug stack of a middle lug (t) between two clevis ears (t/2 each), pin as long as the stack
     k_stack = 2.0
 
     τ_allow = fold.material_pin.τmax * sigfac
@@ -108,14 +98,14 @@ end
 """
     size_latches(F_cap, fold::FoldingWingTip, sigfac; latch_actuator_mass = 0.0) -> (W, details)
 
-Sizes the `fold.n_latch` latch pins and lugs, which carry the wing-box cap force, with [`size_pinned_joint`](@ref),
-and adds the actuator mass of each latch.
+Sizes the `fold.n_latch` latches that carry the wing-box cap force with [`size_pinned_joint`](@ref), and adds the
+actuator mass of each latch.
 
 !!! details "🔃 Inputs and Outputs"
     **Inputs:**
     - `F_cap::Float64`: Wing-box cap force couple at the fold [N].
     - `fold::TASOPT.structures.FoldingWingTip`: Folding wing tip.
-    - `sigfac::Float64`: Stress factor applied to the allowable stresses (as in the wing box).
+    - `sigfac::Float64`: Stress factor.
     - `latch_actuator_mass::Float64`: PLACEHOLDER: actuator mass per latch [kg].
 
     **Outputs:**
@@ -132,21 +122,18 @@ end
     size_load_introduction(F_cap, h_box, w_box, fold::FoldingWingTip, ρ_rib, sigfac) -> (W, details)
 
 Sizes the structure that introduces the wing-box cap forces into the fold joint, and returns its weight per wing side.
-It is made of one fitting per cap (two per wing side) and two full-depth closing ribs, one on each side of the fold.
-
-Each fitting carries the cap force `F_cap` at the allowable stress of the fitting material, scaled by `sigfac` as in
-the wing box, over a length of `fold.fitting_length_factor` times the box depth. The fitting weight is then
-`2 g ρ_fitting (F_cap / σ_fit) fitting_length_factor h_box`. Each rib has the box cross-section and the
-minimum gauge `fold.rib_min_gauge`.
+It consists of one fitting per cap (two per wing side) and two full-depth closing ribs, one on each side of the fold.
+Each fitting carries `F_cap` at the allowable stress of the fitting material, scaled by `sigfac`, over a length of
+`fold.fitting_length_factor` times the box depth. Each rib has the box cross-section and the gauge `fold.rib_min_gauge`.
 
 !!! details "🔃 Inputs and Outputs"
     **Inputs:**
     - `F_cap::Float64`: Wing-box cap force couple at the fold [N].
     - `h_box::Float64`: Wing-box depth at the fold [m].
     - `w_box::Float64`: Wing-box width at the fold [m].
-    - `fold::TASOPT.structures.FoldingWingTip`: Folding wing tip, providing the fitting material, the fitting length factor and the rib gauge.
+    - `fold::TASOPT.structures.FoldingWingTip`: Folding wing tip.
     - `ρ_rib::Float64`: Density of the rib material [kg/m³].
-    - `sigfac::Float64`: Stress factor applied to the allowable stresses (as in the wing box).
+    - `sigfac::Float64`: Stress factor.
 
     **Outputs:**
     - `W::Float64`: Weight of the fittings and ribs per wing side [N].
@@ -166,19 +153,14 @@ end
     size_fold_actuator(wing::Wing, loads) -> (W, details)
 
 Sizes the actuator that folds the wing tip, and returns its weight per wing side. The actuator moment about the fold line
-is the sum of the gravity moment of the folding wing tip and the moment of the wind on the tip panel on the ground. The
-actuator mass is the moment times `fold.actuator_torque_density`.
-
-The gravity moment is `W_tip ℓ_cg`, where `ℓ_cg = dyW_tip / W_tip` is the spanwise distance from the fold station to the
-center of gravity of the tip structure. The wind is a uniform pressure `q = ½ ρ V²` at the ground wind speed
-`fold.ground_wind_speed` and sea-level density, normal to the tip panel. Its moment about the fold line integrates the
-linearly tapering chord `c(y) = co (λ_f + (λt - λ_f) y / ℓ)` over the panel span `ℓ`, which gives
-`q C_N ∫ c y dy = q C_N co ℓ² (λ_f + 2 λt) / 6`. The tip panel geometry is given by [`fold_station_geometry`](@ref).
+is the gravity moment of the tip structure plus the moment of the ground wind load on the tip panel, and the actuator
+mass is this moment times `fold.actuator_torque_density`. The wind is a uniform pressure `q = ½ ρ V²` at
+`fold.ground_wind_speed` and sea-level density, normal to the tip panel.
 
 !!! details "🔃 Inputs and Outputs"
     **Inputs:**
     - `wing::TASOPT.structures.Wing`: Wing structure, with the folding wing tip `wing.fold`.
-    - `loads::NamedTuple`: Fold station loads from [`fold_station_loads`](@ref), of which `W_tip` and `dyW_tip` are used.
+    - `loads::NamedTuple`: Fold station loads from [`fold_station_loads`](@ref).
 
     **Outputs:**
     - `W::Float64`: Weight of the fold actuator per wing side [N].
@@ -208,21 +190,18 @@ end
 """
     fold_cap_strength(wing::Wing, t_cap, sigfac) -> Float64
 
-Force capacity of one wing-box cap at the fold, `σ_cap t_cap w̄ c_perp_f²`, before the fitting factor. The allowable
-cap stress is `σ_cap = wing.outboard.caps.material.σmax sigfac`, `t_cap` is the outboard cap thickness normalised by the
-chord perpendicular to the sweep (`tbcap` from [`size_wing_section!`](@ref)), `w̄ = wing.outboard.cross_section.width_to_chord`
-is the box width over the chord and `c_perp_f` is the chord at the fold station perpendicular to the sweep from
-[`fold_station_geometry`](@ref).
+Force capacity of one wing-box cap at the fold, before the fitting factor: `σ_cap t_cap w̄ c_perp_f²`, with the
+allowable cap stress `σ_cap`, the cap thickness `t_cap`, the box width over chord `w̄` and the chord `c_perp_f`
+at the fold perpendicular to the sweep.
 
 The outboard gauges are sized at the panel break and kept to the tip, so the cap at the fold is stronger than the fold
-loads require. A joint matched to the strength of the box it joins is therefore an upper bound on the joint size, while
-a joint sized for the fold loads alone is a lower bound. [`size_fold_mechanism!`](@ref) uses the larger of the two.
+loads require. [`size_fold_mechanism!`](@ref) sizes the joint for the larger of the two.
 
 !!! details "🔃 Inputs and Outputs"
     **Inputs:**
     - `wing::TASOPT.structures.Wing`: Wing structure, with the folding wing tip `wing.fold`.
     - `t_cap::Float64`: Outboard cap thickness normalised by the chord perpendicular to the sweep [-].
-    - `sigfac::Float64`: Stress factor applied to the allowable stresses (as in the wing box).
+    - `sigfac::Float64`: Stress factor.
 
     **Outputs:**
     - `Float64`: Force capacity of one wing-box cap at the fold [N].
@@ -238,30 +217,24 @@ end
 """
     size_fold_mechanism!(wing::Wing, loads, sigfac, t_cap)
 
-Sizes the fold mechanism of the folding wing tip from the loads at the fold station, and stores the loads and weights
-in the outputs of `wing.fold`. It writes only to `wing.fold`.
+Sizes the fold mechanism from the loads at the fold station, and stores the loads and weights in `wing.fold`.
 
-The hinge is streamwise, as on the 777X, which is consistent with the spanwise fold station and the ground span `2 y_f`.
-The wing-box cap force couple has two candidates. The load-based force is `F_cap_load = abs(M_hinge / h_box_eff)`, where
-`M_hinge = M_f / cos(Λ)` is the bending moment in the plane perpendicular to the sweep, as in the wing box, which is
-conservative for the streamwise hinge, and `h_box_eff` is the effective box depth at the fold station from
-[`fold_station_geometry`](@ref). A negative `M_f`, where the tip weight relief exceeds the aerodynamic moment, still
-loads the caps, which must resist it, so `F_cap_load` uses the magnitude. The strength-based force `F_cap_strength` is the
-force capacity of the outboard cap at the fold from [`fold_cap_strength`](@ref). The more restrictive of the two governs,
-`F_cap = fitting_factor max(F_cap_load, F_cap_strength)`. The weight per wing side is the sum of the hinge pins and lugs
-(which carry the resultant of `F_cap` and the shear `S_f`, sized with [`size_pinned_joint`](@ref)), the latches
-([`size_latches`](@ref)), the load introduction structure ([`size_load_introduction`](@ref), with ribs of the wing-box
-cap material), the actuator ([`size_fold_actuator`](@ref)) and the fold systems, `fold.systems_mass` per wing side.
+The hinge is streamwise, as on the 777X. The wing-box cap force is
+`F_cap = fitting_factor max(F_cap_load, F_cap_strength)`, with `F_cap_load = abs(M_hinge / h_box_eff)` and
+`M_hinge = M_f / cos(Λ)` (conservative for a streamwise hinge), and `F_cap_strength` from [`fold_cap_strength`](@ref).
+The magnitude of `M_f` is used because the caps must also resist a negative moment. The weight per wing side is the sum of
+the hinge pins and lugs (carrying the resultant of `F_cap` and `S_f`), the latches, the load introduction structure, the
+actuator and the fold systems, `fold.systems_mass`.
 
-The weight outputs `W_fold`, `W_hinge_lugs`, `W_latches`, `W_load_intro` and `W_actuator` are totals for both wing sides.
-The bending relief `dyW_fold` is per wing side. The sweep offset `dxW_fold` is for both wing sides.
+The weights `W_fold`, `W_hinge_lugs`, `W_latches`, `W_load_intro` and `W_actuator` are totals for both wing sides.
+The bending relief `dyW_fold` is per wing side and the sweep moment `dxW_fold` is for both wing sides.
 
 !!! details "🔃 Inputs and Outputs"
     **Inputs:**
     - `wing::TASOPT.structures.Wing`: Wing structure, with the folding wing tip `wing.fold`.
-    - `loads::NamedTuple`: Fold station loads from [`fold_station_loads`](@ref), of which `S_f`, `M_f`, `W_tip` and `dyW_tip` are used.
-    - `sigfac::Float64`: Stress factor applied to the allowable stresses (as in the wing box).
-    - `t_cap::Float64`: Outboard cap thickness normalised by the chord perpendicular to the sweep, `tbcap` from [`size_wing_section!`](@ref) [-].
+    - `loads::NamedTuple`: Fold station loads from [`fold_station_loads`](@ref).
+    - `sigfac::Float64`: Stress factor.
+    - `t_cap::Float64`: Outboard cap thickness normalised by the chord perpendicular to the sweep (`tbcap`) [-].
 
     **Outputs:** (stored in `wing.fold`)
     - `S_fold::Float64`: Shear at the fold station, per wing side [N].
@@ -285,7 +258,7 @@ function size_fold_mechanism!(wing::Wing, loads, sigfac, t_cap)
     F_cap_strength = fold_cap_strength(wing, t_cap, sigfac)
     F_cap = fold.fitting_factor * max(F_cap_load, F_cap_strength)
 
-    # The hinge pins carry the resultant of the cap force and the shear
+    # Hinge pins carry the resultant of the cap force and the shear
     W_hinge_lugs, _ = size_pinned_joint(hypot(F_cap, loads.S_f), fold.n_hinge, fold, sigfac)
     W_latches, _ = size_latches(F_cap, fold, sigfac)
     W_load_intro, _ = size_load_introduction(F_cap, geometry.h_box_eff, geometry.w_box, fold, wing.outboard.caps.ρ, sigfac)
@@ -301,7 +274,7 @@ function size_fold_mechanism!(wing::Wing, loads, sigfac, t_cap)
     fold.W_latches = 2 * W_latches
     fold.W_load_intro = 2 * W_load_intro
     fold.W_actuator = 2 * W_actuator
-    # Includes the fold systems, which have no output field of their own
+    # Includes the fold systems mass
     fold.W_fold = 2 * W_side
     fold.dyW_fold = W_side * (fold.η_fold - layout.ηs) * b / 2
     fold.dxW_fold = fold.W_fold * (geometry.y_f - layout.ηo * b / 2) * tand(Λ)
@@ -312,16 +285,10 @@ end
 """
     fold_tip_fuel_fraction(wing::Wing, η_f) -> Float64
 
-    # This is a placeholder function. The final implementation will have the wings broken up into sections such that the folding wingtip does not need to estimate its fuel volume fraction and deduce it from the outboard wing panel...
-
-Fraction of the fuel volume of the outer wing panel that lies inboard of the fold station `η_f`, for the outer-panel
-fuel volume `Vout` of the fuel tank, which only fills the wing box inboard of the fold. It can also be used as an
-approximation for the sweep term `dxVout`. The fuel volume is proportional to the chord squared, `λ²`, which varies linearly from the
-inboard value `λs` at the panel break `ηs` to the tip value `λt` at the tip, so with `s = (η - ηs) / (1 - ηs)` the fraction is
-`∫₀ˢᶠ λ² ds / ∫₀¹ λ² ds`, evaluated in closed form. It is `0` at the panel break and `1` at the tip.
-
-Returns `1.0` when `wing.fold.has_fold` is `false`, so a caller can multiply by it unconditionally. It is used by
-[`wing_weights!`](@ref) for the outer-panel fuel terms.
+Fraction of the outer-panel fuel volume `Vout` that lies inboard of the fold station `η_f`, since the fuel tank only
+fills the wing box inboard of the fold. The fuel volume is taken proportional to `λ²`, which gives
+`∫₀ˢᶠ λ² ds / ∫₀¹ λ² ds`, with `s = (η - ηs) / (1 - ηs)`. Returns `1.0` when `wing.fold.has_fold` is `false`.
+Used by [`wing_weights!`](@ref).
 
 !!! details "🔃 Inputs and Outputs"
     **Inputs:**
@@ -332,6 +299,7 @@ Returns `1.0` when `wing.fold.has_fold` is `false`, so a caller can multiply by 
     - `Float64`: Fraction of the outer-panel fuel volume inboard of the fold.
 """
 function fold_tip_fuel_fraction(wing::Wing, η_f)
+    # PLACEHOLDER: estimates the fuel volume from the outboard panel instead of a separately sectioned wing
     wing.fold.has_fold || return 1.0
 
     λs, Δλ, s_f = fold_tip_fuel_chord_geometry(wing, η_f)
@@ -343,13 +311,9 @@ end
 """
     fold_tip_fuel_moment_fraction(wing::Wing, η_f) -> Float64
 
-Fraction of the spanwise moment of the outer-panel fuel volume about the panel break that comes from the part inboard
-of the fold station `η_f`, for the fuel volume moment `dyVout` of the fuel tank. As in [`fold_tip_fuel_fraction`](@ref),
-the fuel volume is proportional to `λ²`, so with `s = (η - ηs) / (1 - ηs)` the fraction is `∫₀ˢᶠ λ² s ds / ∫₀¹ λ² s ds`,
-evaluated in closed form. It is `0` at the panel break and `1` at the tip.
-
-Returns `1.0` when `wing.fold.has_fold` is `false`, so a caller can multiply by it unconditionally. It is used by
-[`wing_weights!`](@ref) for the outer-panel fuel terms.
+Fraction of the spanwise moment `dyVout` of the outer-panel fuel volume about the panel break that comes from the part
+inboard of the fold station `η_f`. As in [`fold_tip_fuel_fraction`](@ref), the fraction is
+`∫₀ˢᶠ λ² s ds / ∫₀¹ λ² s ds`. Returns `1.0` when `wing.fold.has_fold` is `false`. Used by [`wing_weights!`](@ref).
 
 !!! details "🔃 Inputs and Outputs"
     **Inputs:**
@@ -378,26 +342,16 @@ end
 """
     fold_ground_margins!(wing::Wing, fuselage::Fuselage, vtail::Tail, landing_gear)
 
-Calculates the span and height of the aircraft with the wing tips folded on the ground, and the margins to the span limit
-`wing.layout.max_span` and to the top of the vertical tail, and stores them in `wing.fold`. It writes only to `wing.fold`.
-The margins are soft: they are reported but not enforced, so a negative margin does not change the sizing.
+Calculates the ground span with the wing tips folded and the height of the folded tip, and the margins to the span limit
+`wing.layout.max_span` and to the top of the vertical tail, and stores them in `wing.fold`. The margins are reported but
+not enforced.
 
-With the tips folded the span is `2 y_f`, where `y_f` is the fold station from [`fold_station_geometry`](@ref), and the span
-margin is `max_span - 2 y_f`. The height is that of the highest point of the folded tip, taken as the hinge line at the top
-of the wing box with the tip panel rotated up to vertical. With the wing dihedral `Γ` the hinge is raised by
-`(y_f - y_o) tan(Γ)` relative to the wing root, where `y_o = ηo b/2` is the wing root station, and the tip panel of spanwise
-length `ℓ` rises by `ℓ cos(Γ)`, so
-`z_tip = z_wing + (y_f - y_o) tan(Γ) + h_box_eff / 2 + ℓ cos(Γ)`. The height margin is the fin top height
-`R_fuse + b_vtail` minus `z_tip`.
+The folded span is `2 y_f`. The tip height is taken at the hinge line at the top of the wing box plus the tip panel
+rotated up to vertical, `z_tip = z_wing + (y_f - y_o) tan(Γ) + h_box_eff / 2 + ℓ cos(Γ)`, in the frame of
+`wing.layout.z`. The height margin is the fin top height `R_fuse + b_vtail` minus `z_tip`, assuming the fin root is at the
+fuselage crown. Aircraft with more than one vertical tail (`ntails > 1`) are not handled.
 
-The heights are in the frame of `wing.layout.z` with the aircraft level on the ground, so the landing gear height cancels.
-The span `b` is already the span projected on the horizontal plane, so no `cos(Γ)` factor is needed. The fin root is assumed
-to be at the fuselage crown, and the fin top is the height reference because it is the highest point of the aircraft today;
-a T-tail would change this reference. Aircraft with more than one vertical tail (`ntails > 1`) are not handled. The dihedral
-is read from `landing_gear.wing_dihedral_angle` and is not modified.
-
-Without a fold (`wing.fold.has_fold` is `false`) the ground span is the wing span, the span margin is `max_span - b`, and
-`z_tip` and `height_margin` are `0`.
+Without a fold the ground span is the wing span, and `z_tip` and `height_margin` are `0`.
 
 !!! details "🔃 Inputs and Outputs"
     **Inputs:**

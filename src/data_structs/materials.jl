@@ -56,7 +56,7 @@ Material specified needs to have the following data in the database:
 - ν   : Poisson's Ratio [-]
 - σmax: Maximum Stress (Yield or Ultimate Strength) [Pa]
 - τmax: Maximum Shear [Pa]
-The thermal conductivity `k` is optional and defaults to 0.0 (with an `@info` message) if missing.
+The thermal conductivity `k` is optional and defaults to 0.0 if missing.
 """
 function StructuralAlloy(material::String; max_avg_stress = 1.1, safety_factor = 1.5)
     local MatProp, ρ, E, G, ν, σmax, τmax, YTS, UTS, USS, k
@@ -75,7 +75,7 @@ function StructuralAlloy(material::String; max_avg_stress = 1.1, safety_factor =
             USS  = MatProp["shear_strength"]
             σmax = YTS/max_avg_stress/safety_factor
             τmax = USS/max_avg_stress/safety_factor
-            k = get(MatProp, "thermal_conductivity") do # optional (e.g. fitting alloys)
+            k = get(MatProp, "thermal_conductivity") do # optional
                 @info "thermal_conductivity not found for $material; using 0.0"
                 0.0
             end

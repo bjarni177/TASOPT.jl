@@ -22,7 +22,6 @@
             @test database[name]["bearing_strength"] > 0.0
         end
 
-        # Alloy with a conductivity keeps it and logs nothing
         alloy = @test_logs StructuralAlloy("Al-7075")
         @test alloy.k == database["Al-7075"]["thermal_conductivity"]
 

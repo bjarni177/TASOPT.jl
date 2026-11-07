@@ -3,7 +3,6 @@
     Logging = Test.Logging
 
     @testset "Hinge drag from input" begin
-        # Read default_folding_wing.toml with delta_CD_fold_counts overridden
         function read_with_drag_counts(counts)
             path_folding = joinpath(TASOPT.__TASOPTroot__, "../example/defaults/default_folding_wing.toml")
             input = TOML.parsefile(path_folding)
@@ -36,10 +35,8 @@
             return ac.para[iaCD, ipcruise1, 1]
         end
 
-        # With folding on, CD_fold is added to the total CD
         @test total_CD(true, 5e-4) - total_CD(true, 0.0) ≈ 5e-4 rtol = 1e-9
 
-        # With folding off, CD_fold is ignored
         @test total_CD(false, 5e-4) == total_CD(false, 0.0)
     end
 

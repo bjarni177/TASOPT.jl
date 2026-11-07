@@ -390,9 +390,7 @@ function _size_aircraft!(ac; itermax=35,
             wing.strut.S = 2.0 * cstrut * lstrutp
         end
 
-        # Update wing panel weights. The fold mechanism is deliberately not in these panel weights: wing_weights!
-        # relieves the outboard loads explicitly with the mechanism weight stored in wing.fold. The mechanism is
-        # included in wing.weight and wing.dxW, which are used for the total weight and the balance.
+        # Update wing panel weights. The fold mechanism is not included here, but in wing.weight and wing.dxW
         wing.inboard.weight = Wsinn * (1.0 + fwadd) + rfmax * Wfinn
         wing.outboard.weight = Wsout * (1.0 + fwadd) + rfmax * Wfout
         wing.inboard.dyW = dyWsinn * (1.0 + fwadd) + rfmax * dyWfinn
@@ -721,7 +719,7 @@ function _size_aircraft!(ac; itermax=35,
     balance_aircraft!(ac, imission, ip, rfuel, rpay, ξpay, opt_trim_var;
                         Ldebug = Ldebug)
 
-    # Ground span and height margins are reported only, not enforced
+    # Folded ground span and height margins, reported only
     fold_ground_margins!(wing, fuse, vtail, landing_gear)
 
     #Check if all engine points have converged, warn if not

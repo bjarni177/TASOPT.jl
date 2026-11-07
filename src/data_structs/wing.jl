@@ -158,10 +158,9 @@ end
 """
     fold_station_geometry(wing::Wing, η_f) -> NamedTuple
 
-Calculates the planform and wing-box geometry at the spanwise fold station `η_f`, which lies on the outboard
-panel (`ηs ≤ η_f ≤ 1`). The chord varies linearly between the break chord ratio `λs` and the tip chord ratio `λt`.
-The box height and width are measured perpendicular to the sweep, using the normalized gauges of the outboard cross-section,
-since the outer panel keeps the same normalized gauges as at the panel break `ηs`.
+Calculates the planform and wing-box geometry at the spanwise fold station `η_f` on the outboard panel
+(`ηs ≤ η_f ≤ 1`). The chord varies linearly from the break to the tip, and the box dimensions are measured perpendicular
+to the sweep with the outboard cross-section, which keeps its normalized gauges to the tip.
 
 !!! details "🔃 Inputs and Outputs"
     **Inputs:**

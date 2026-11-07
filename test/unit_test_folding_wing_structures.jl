@@ -19,7 +19,6 @@ using Printf
         @test fold.n_latch == 0
         @test fold.fitting_factor == 0.0
 
-        # No NaN in any numeric field
         for name in fieldnames(typeof(fold))
             value = getfield(fold, name)
             if value isa Float64
@@ -27,7 +26,6 @@ using Printf
             end
         end
 
-        # Outputs start at zero
         @test fold.W_fold == 0.0
         @test fold.S_fold == 0.0
         @test fold.M_fold == 0.0
@@ -50,7 +48,6 @@ using Printf
         @test fold.n_hinge == 3
         @test fold.material_fitting.name == "15-5PH"
 
-        # Everything not overridden keeps its default
         @test fold.n_latch == 0
         @test fold.fitting_factor == 0.0
         @test fold.material_pin.name == "300M"
@@ -72,7 +69,6 @@ using Printf
         @test ac.wing.S === ac.wing.layout.S
         @test ac.wing.has_strut == false
 
-        # Folding stays off after sizing the default aircraft
         size_aircraft!(ac; printiter = false)
         @test ac.wing.fold.has_fold == false
         @test ac.wing.fold.W_fold == 0.0
@@ -1101,7 +1097,6 @@ using Printf
     @testset "Fold text outputs" begin
         path_folding = joinpath(TASOPT.__TASOPTroot__, "../example/defaults/default_folding_wing.toml")
         text_of(print_function, ac) = (io = IOBuffer(); print_function(ac; io = io); String(take!(io)))
-        # The line of the text that starts with a label
         line_of(text, label) = get(filter(line -> startswith(line, label), split(text, '\n')), 1, "")
 
         @testset "Without folding" begin
@@ -1131,7 +1126,6 @@ using Printf
             @test occursin(@sprintf("%.1f", fold.span_margin), line_of(geometry_text, "span margin"))
             @test occursin(@sprintf("%.1f", fold.z_tip), line_of(geometry_text, "z tip"))
             @test occursin(@sprintf("%.1f", fold.height_margin), line_of(geometry_text, "height margin"))
-            @test occursin("T-tail", line_of(geometry_text, "height margin"))
         end
     end
 

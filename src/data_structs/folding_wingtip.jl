@@ -1,8 +1,7 @@
 """
 $TYPEDEF
 
-Folding wingtip: inputs and sizing outputs. Numeric inputs default to zero so that a missing value fails
-the input checks when `has_fold = true`.
+Folding wingtip: inputs and sizing outputs.
 
 $TYPEDFIELDS
 """
@@ -14,7 +13,7 @@ $TYPEDFIELDS
     η_fold::Float64 = 0.0
     """Number of hinges"""
     n_hinge::Int = 0
-    """Number of latches, at least 2 so that no single failure unlocks the tip in flight"""
+    """Number of latches"""
     n_latch::Int = 0
     """Fitting factor on fittings (14 CFR 25.625) [-]"""
     fitting_factor::Float64 = 0.0
@@ -36,7 +35,7 @@ $TYPEDFIELDS
     fitting_length_factor::Float64 = 0.0
     """PLACEHOLDER input: minimum rib gauge thickness [m]"""
     rib_min_gauge::Float64 = 0.0
-    """PLACEHOLDER input: actuator mass per unit hinge moment [kg/(N m)]. The shipped inputs use 0.01 (100 N m/kg) from industrial steel/iron helical hydraulic rotary actuators (Eckart SM4: 69-100 N m/kg; Moveco RR.58: 12.7 kN m, 185 kg), an aerospace actuator is expected to be lighter"""
+    """PLACEHOLDER input: actuator mass per unit hinge moment [kg/(N m)]"""
     actuator_torque_density::Float64 = 0.0
     """Ground wind speed for the hinge load case [m/s]"""
     ground_wind_speed::Float64 = 0.0

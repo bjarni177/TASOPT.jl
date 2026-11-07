@@ -651,8 +651,7 @@ dweight = dwing["Weightfracs"]
     wing.weight_frac_spoilers = readweight("spoilers")
     wing.weight_frac_attachments = readweight("attachments")
 
-# Folding wingtip. Pin and lug bearing strengths come from the material database
-# Templates without a FoldingTip block (regional, wide) use the block of default_input.toml
+# Folding wingtip. Templates without a FoldingTip block fall back to default_input.toml
 dfold = haskey(dwing, "FoldingTip") ? dwing["FoldingTip"] :
     TOML.parsefile(joinpath(TASOPT.__TASOPTroot__, "../example/defaults/default_input.toml"))["Wing"]["FoldingTip"]
 fold_i = read_input("FoldingTip", wing_i, Dict("FoldingTip" => dfold))
@@ -688,8 +687,7 @@ readfold(x) = read_input(x, fold_i, dfold)
         wing.layout.ηs < fold.η_fold < 1 ||
             error("Wing.FoldingTip fold_location must lie between panel_break_location and 1")
         fold.n_hinge >= 1 || error("Wing.FoldingTip n_hinge must be at least 1")
-        # The 777-8/-9 folding wingtip special conditions (Federal Register 2018-10576, condition 10) require that no
-        # single failure, including of any single structural element, unlocks the tip in flight
+        # No single failure may unlock the tip in flight (777-8/-9 special conditions, Federal Register 2018-10576)
         fold.n_latch >= 2 || error("Wing.FoldingTip n_latch must be at least 2")
         fold.fitting_factor >= 1 || error("Wing.FoldingTip fitting_factor must be at least 1")
     end

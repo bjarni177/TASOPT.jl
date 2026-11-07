@@ -24,7 +24,7 @@ where:
 - ``C_{D,nace}`` (`CDnace`) is the nacelle profile drag,
 - ``\\Delta C_{D,BLI,f}`` (`dCDBLIf`) is related to the boundary layer ingestion on the fuselage,
 - ``\\Delta C_{D,BLI,w}`` (`dCDBLIw`) is related to the boundary layer ingestion on the wing,
-- and ``C_{D,fold}`` (`wing.fold.CD_fold`) is the fold hinge drag, only included if `wing.fold.has_fold` is `true`.
+- and ``C_{D,fold}`` (`wing.fold.CD_fold`) is the fold hinge drag (if `wing.fold.has_fold`).
 
 
 !!! details "🔃 Inputs and Outputs"
