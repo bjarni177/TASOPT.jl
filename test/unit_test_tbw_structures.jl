@@ -79,14 +79,17 @@ end
 
 """
 Shear `V` [N] and midspan moment `M` [N m] of the net transverse load of the strut of `ac`: in each case the strut weight
-times the load factor and the strut lift act oppositely, uniformly along the strut; the largest net load per length acts
+times the load factor (vertical) and the strut lift (normal to the strut) act oppositely, uniformly along the strut; the largest net load per length acts
 on a pinned beam over the buckling length (`V = q l_b / 2`, `M = q l_b^2 / 8`).
 """
 function strut_net_transverse_loads(ac)
     wing, strut = ac.wing, ac.wing.strut
     sl = wing.sizing_loads
     L, z = strut.length, strut.z
-    q_net(name, r) = abs(r.strut_lift - getfield(sl, name).n_computed * strut.weight / 2) / L * sqrt(L^2 - z^2) / L
+    function q_net(name, r)
+        W = getfield(sl, name).n_computed * strut.weight / 2
+        return sqrt(r.strut_lift^2 / cos(strut.dihedral)^2 - 2 * r.strut_lift * W + W^2 * (1 - z^2 / L^2)) / L
+    end
     q_perp = maximum(q_net(name, r) for (name, r) in sl.results)
     has_jury = ac.options.opt_wing_config == WingConfig.TrussBraced
     l_b = TASOPT.structures.strut_buckling_length(L, has_jury ? wing.jury.eta_strut : nothing)
@@ -1257,8 +1260,10 @@ end
         # Hand calculation: the net of lift, own weight and fuel acts on the strut, its component perpendicular to the strut over the length
         function expected_transverse_loads(f)
             L, z = strut.length, strut.z
-            q_net(name, r) = abs(r.strut_lift - getfield(wing.sizing_loads, name).n_computed * strut.weight / n_wings - f(name)) /
-                             L * sqrt(L^2 - z^2) / L
+            function q_net(name, r)
+                W = getfield(wing.sizing_loads, name).n_computed * strut.weight / n_wings + f(name)
+                return sqrt(r.strut_lift^2 / cos(strut.dihedral)^2 - 2 * r.strut_lift * W + W^2 * (1 - z^2 / L^2)) / L
+            end
             q_perp = maximum(q_net(name, r) for (name, r) in results)
             return (V = q_perp * L / 2, M = q_perp * L^2 / 8)
         end
@@ -1795,7 +1800,8 @@ end
                 # the prescribed rule M_root = M_break, which the point load F_wing at the attachment adds to
                 R = (po * span / 12) * (ηs - ηo) * (1 + 2gammas) + outboard.S_break + F_wing
             end
-            return (F_strut = F_strut, strut_force = R * ls / z + (1 - f_wing) * F_strut * z / ls,
+            # the strut lift is normal to the strut: no axial force in it, and a horizontal inboard push F z / L at the wing end
+            return (F_strut = F_strut, strut_force = R * ls / z, P_axial = -R * L / z - f_wing * F_strut * z / L,
                     S_break = outboard.S_break, M_break = outboard.M_break,
                     S_root = outboard.S_break + po * L * (1 + gammas) / 2 + F_wing - R, M_root = M0(0) - R * L)
         end
@@ -1833,6 +1839,7 @@ end
                     @test r.S_break ≈ expected.S_break rtol = 1e-9
                     @test r.M_break ≈ expected.M_break rtol = 1e-9
                     @test r.strut_force ≈ expected.strut_force rtol = 1e-9
+                    @test r.P_axial_inboard ≈ expected.P_axial rtol = 1e-9
                     @test r.S_root ≈ expected.S_root rtol = 1e-9
                     @test r.M_root ≈ expected.M_root rtol = 1e-9
                     @test sign(r.strut_lift) == sign(case_load_factor[name]) # the strut lift has the sign of the load factor
@@ -1886,7 +1893,7 @@ end
                 R = (po_fuel * span / 12) * (ηs - ηo) * (1 + 2gammas) + outboard.S_break + F_end
             end
             return (R = R, S_root = outboard.S_break + po_fuel * L * (1 + gammas) / 2 + F_end - R, M_root = M0(0) - R * L,
-                    strut_force = R * ls / z + ((F - f) - F_end) * z / ls)
+                    strut_force = R * ls / z - (f / 2) * z / ls)
         end
 
         @testset "wing_case_loads of a braced wing: the strut fuel load adds to the wing-end point load and the fuselage-end force" begin
@@ -2129,9 +2136,8 @@ end
 
             # the moment is continuous at the strut attachment, the shear jumps there by the strut reaction
             @test r.inboard_moment[end] ≈ r.M_break rtol = 1e-6
-            # the strut force is the one at the fuselage end: R ls / z + (1 - ξ_cp) F sin(dihedral)
-            ξ_cp = TASOPT.strut_lift_centroid_fraction(wing.strut.spanload_exponent)
-            @test r.strut_reaction ≈ (r.strut_force - (1 - ξ_cp) * r.strut_lift * z / ls) * z / ls rtol = 1e-9
+            # the strut force is the one at the fuselage end: R ls / z - (f / 2) z / ls; the strut lift is normal to the strut and adds no axial force
+            @test r.strut_reaction ≈ (r.strut_force + r.strut_fuel_load / 2 * z / ls) * z / ls rtol = 1e-9
             @test r.strut_reaction != 0.0
             @test r.inboard_shear[end] + r.strut_reaction ≈ r.S_break rtol = 1e-6
 

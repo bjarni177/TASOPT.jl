@@ -214,27 +214,27 @@ end
 
     @testset "Headline numbers" begin
         @test ac.options.opt_fuel == FuelType.JetA
-        @test ac.parg[igWMTO] ≈ 807373.6511291902 rtol=1e-4
-        @test ac.wing.weight ≈ 55956.15824736599 rtol=1e-4
-        @test ac.wing.strut.weight ≈ 18617.20730567429 rtol=1e-4
-        @test ac.parg[igWfuel] ≈ 226756.75664593448 rtol=1e-4
-        @test ac.parm[imPFEI] ≈ 0.8942261829707749 rtol=1e-4
-        @test ac.para[iaCL, ipcruise1, 1] / ac.para[iaCD, ipcruise1, 1] ≈ 17.20733997080161 rtol=1e-4
+        @test ac.parg[igWMTO] ≈ 808084.2601082267 rtol=1e-4
+        @test ac.wing.weight ≈ 56149.28799844415 rtol=1e-4
+        @test ac.wing.strut.weight ≈ 18829.636591221522 rtol=1e-4
+        @test ac.parg[igWfuel] ≈ 226909.3715166272 rtol=1e-4
+        @test ac.parm[imPFEI] ≈ 0.894828024931875 rtol=1e-4
+        @test ac.para[iaCL, ipcruise1, 1] / ac.para[iaCD, ipcruise1, 1] ≈ 17.211351022629255 rtol=1e-4
     end
 
     @testset "Strut" begin
-        @test ac.wing.strut.area ≈ 0.016229505661328865 rtol=1e-4
+        @test ac.wing.strut.area ≈ 0.016407785450506876 rtol=1e-4
         @test ac.wing.jury.eta_strut == 0.5
         @test ac.wing.strut.x_strut_attach ≈ 17.1123 rtol=1e-12
-        @test ac.wing.strut.axial_force ≈ 2.1531671085405173e6 rtol=1e-4
-        @test ac.fuselage.strut_attach.W ≈ 1117.0324383404572 rtol=1e-4
+        @test ac.wing.strut.axial_force ≈ 2.1296518136531916e6 rtol=1e-4
+        @test ac.fuselage.strut_attach.W ≈ 1129.7781954732914 rtol=1e-4
         test_strut_cases(ac; strut_criterion = :tension,
                          governing_root = :taxi, governing_break = :pullup,
                          governing_strut = :pullup, governing_strut_compression = :pushover,
                          infeasibilities = Set([:wing_fuel_volume_exceeded]))
     end
 
-    test_ac_off_design(ac, 1.0513250520359694, 148107.606968034, 700033.4695512897)
+    test_ac_off_design(ac, 1.0520149588587828, 148204.79902900502, 700688.6557206044)
 end
 
 @testset "TBW LCH4 smoke" verbose=true begin

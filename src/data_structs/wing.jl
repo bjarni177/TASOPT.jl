@@ -16,7 +16,7 @@ $TYPEDFIELDS
     webs::StructuralMember = StructuralMember(material = StructuralAlloy("TASOPT-Al"))
 
     # Geometry inputs
-    """Planform area of both struts [m^2]"""
+    """Area of both struts in the strut plane (streamwise chord times front-view length) [m^2]. Its projection on the wing plane is `S cos(dihedral)`"""
     S::Float64 = 0
     """Strut z position [m]"""
     z::Float64 = 0

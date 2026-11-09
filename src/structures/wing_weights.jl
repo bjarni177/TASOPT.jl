@@ -606,29 +606,28 @@ pinned ends and its loading ``(4\\xi(1-\\xi))^p`` is symmetric, with the centroi
 strut_wing_end_lift(wing, F_strut) = strut_lift_centroid_fraction(wing.strut.spanload_exponent) * F_strut
 
 """
-    strut_fuselage_end_force(wing, R, ls, F_strut; strut_fuel_load = 0.0)
+    strut_fuselage_end_force(wing, R, ls; strut_fuel_load = 0.0)
 
 Returns the axial force of the strut at its fuselage end, positive in tension, for the strut reaction `R`, the strut
-length `ls`, the strut lift `F_strut` and the inertia load `strut_fuel_load` of the strut fuel (see [`wing_case_loads`](@ref)):
+length `ls` and the inertia load `strut_fuel_load` of the strut fuel (see [`wing_case_loads`](@ref)):
 ```math
-T_f = R\\,\\frac{l_s}{z} + \\left((1 - \\xi_{cp})\\,F_{strut} - \\frac{F_{fuel}}{2}\\right)\\frac{z}{l_s}
+T_f = R\\,\\frac{l_s}{z} - \\frac{F_{fuel}}{2}\\frac{z}{l_s}
 ```
-`R` and `F_strut` have the same sign, so ``|T_f|`` is the largest axial force of the strut.
+The strut lift acts normal to the strut, so it adds no axial force.
 
 !!! details "🔃 Inputs and Outputs"
     **Inputs:**
-    - `wing::TASOPT.structures.Wing`: Wing structure, with the strut height `wing.strut.z` and `wing.strut.spanload_exponent`.
+    - `wing::TASOPT.structures.Wing`: Wing structure, with the strut height `wing.strut.z`.
     - `R::Float64`: Strut reaction on the wing [N], see [`strut_reaction`](@ref).
     - `ls::Float64`: Length of the strut in the plane of the strut [m].
-    - `F_strut::Float64`: Lift on the strut of one wing [N], with the sign of the load factor.
     - `strut_fuel_load::Float64`: (keyword, default 0.0) Inertia load of the fuel in one strut, positive downward [N].
       Half of it acts at the fuselage end of the strut.
 
     **Outputs:**
     - `T_f::Float64`: Axial force of the strut at the fuselage end [N].
 """
-strut_fuselage_end_force(wing, R, ls, F_strut; strut_fuel_load = 0.0) =
-    R * ls / wing.strut.z + (F_strut - strut_wing_end_lift(wing, F_strut) - strut_fuel_load / 2) * wing.strut.z / ls
+strut_fuselage_end_force(wing, R, ls; strut_fuel_load = 0.0) =
+    R * ls / wing.strut.z - strut_fuel_load / 2 * wing.strut.z / ls
 
 """
     wing_case_loads(::Braced, wing, po, gammat, gammas, Nload, We, neout, dyeout, neinn, dyeinn;
@@ -640,12 +639,14 @@ case, as a [`WingCaseLoads`](@ref). The inboard bay of length ``L = (b/2)(η_s -
 [`strut_reaction`](@ref). `po` is the root loading of the wing, which carries the share ``1-k`` of the lift
 (see [`strut_lift_share`](@ref), [`wing_case_root_loading`](@ref)).
 
-The strut has pinned ends, the fuselage end at the origin and the wing end at ``(L, z)``, and the lift ``F_{strut}``
-acts at ``\\xi_{cp} L``. The inertia load ``F_{fuel}`` of the strut fuel (`strut_fuel_load`, positive downward) acts
+The strut has pinned ends, the fuselage end at the origin and the wing end at ``(L, z)``. The vertical lift
+``F_{strut}`` acts at ``\\xi_{cp} L`` normal to the strut, as ``F_{strut}/\\cos\\Gamma`` with the strut angle
+``\\Gamma = \\operatorname{atan}(z/L)``, so it adds the inboard horizontal force ``F_{strut}\\tan\\Gamma`` and no axial force
+in the strut. The inertia load ``F_{fuel}`` of the strut fuel (`strut_fuel_load`, positive downward) acts
 at mid-strut, so each end carries half of it. The wing end carries ``F_{wing} = \\xi_{cp} F_{strut} - F_{fuel}/2``.
 The fuselage end governs, in tension and in compression:
 ```math
-T = T_f = R\\,\\frac{l_s}{z} + \\left((1-\\xi_{cp})\\,F_{strut} - \\frac{F_{fuel}}{2}\\right)\\frac{z}{l_s}, \\qquad P = -R\\,\\frac{L}{z}, \\qquad l_s = \\sqrt{z^2 + L^2}
+T = T_f = R\\,\\frac{l_s}{z} - \\frac{F_{fuel}}{2}\\frac{z}{l_s}, \\qquad P = -R\\,\\frac{L}{z} - \\xi_{cp}\\,F_{strut}\\,\\frac{z}{L}, \\qquad l_s = \\sqrt{z^2 + L^2}
 ```
 `T` is positive in tension. `P` is the axial force in the inboard wing, positive in tension, so an under-wing strut in a
 pull-up compresses the wing.
@@ -702,13 +703,13 @@ function wing_case_loads(::Braced, wing, po, gammat, gammas, Nload, We, neout, d
     stations = range(0.0, L; length = 11)
     M_stations = [M0(x) - R * (L - x) for x in stations]
     S_stations = [inboard_loads(x).S - R for x in stations]
-    strut_force = strut_fuselage_end_force(wing, R, ls, strut_lift; strut_fuel_load)
+    strut_force = strut_fuselage_end_force(wing, R, ls; strut_fuel_load)
 
     root = inboard_loads(0.0)
     return WingCaseLoads(S_root = root.S - R, M_root = root.M - R * L,
                          S_break = wing.outboard.max_shear_load, M_break = wing.outboard.moment,
                          M_inboard_extreme = M_stations[argmax(abs.(M_stations))],
-                         P_axial_inboard = -(R * ls / z) * L / ls, strut_force = strut_force,
+                         P_axial_inboard = -R * L / z - strut_wing_end_lift(wing, strut_lift) * z / L, strut_force = strut_force,
                          inboard_stations = collect(stations), inboard_shear = S_stations,
                          inboard_moment = M_stations, strut_reaction = R, strut_lift = strut_lift,
                          strut_fuel_load = strut_fuel_load)
@@ -1164,7 +1165,7 @@ function wing_weights!(wing, po, gammat, gammas,
             F_strut = strut_lift_on_strut(wing, po, gammat, gammas)
             F_wing = strut_wing_end_lift(wing, F_strut)
             Rstrut = (po*wing.layout.span/12.0)*(etas-etao)*(1.0+2.0*gammas) + wing.outboard.max_shear_load + F_wing
-            Tstrut = strut_fuselage_end_force(wing, Rstrut, ls, F_strut)
+            Tstrut = strut_fuselage_end_force(wing, Rstrut, ls)
             #c     Pstrut = Rstrut*0.5*wing.layout.span*(etas-etao)/zs
 
             #----- inboard shear,moment used for sparbox sizing
@@ -1214,13 +1215,14 @@ function wing_weights!(wing, po, gammat, gammas,
                             if getfield(sl, name) isa WingLoadCase && getfield(sl, name).active; init = 0.0)
         end
         W_strut_one_wing = strut.weight / n_wings
-        perpendicular_load(F) = abs(F) / lsp * sqrt(lsp^2 - strut.z^2) / lsp
+        # strut lift F is normal to the strut (vertical part F, horizontal F tanΓ); weight W is vertical, positive down
+        perpendicular_load(F, W) = sqrt(F^2 / cos(strut.dihedral)^2 - 2 * F * W + W^2 * (1 - strut.z^2 / lsp^2)) / lsp
         if any(r.strut_lift != 0 for r in values(results))
             sl = wing.sizing_loads
-            q_perp = maximum(perpendicular_load(r.strut_lift - getfield(sl, name).n_computed * W_strut_one_wing - r.strut_fuel_load)
+            q_perp = maximum(perpendicular_load(r.strut_lift, getfield(sl, name).n_computed * W_strut_one_wing + r.strut_fuel_load)
                              for (name, r) in results)
         else
-            q_perp = perpendicular_load(n_max * W_strut_one_wing)
+            q_perp = perpendicular_load(0.0, n_max * W_strut_one_wing)
         end
         V_transverse = q_perp * buckling_length / 2
         strut.bending_moment = q_perp * buckling_length^2 / 8
