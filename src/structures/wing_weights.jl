@@ -18,19 +18,25 @@ struct WingSectionDimensions{T<:Real}
 end
 
 """
-    size_wing_section!(section, sweep, sigfac)
+    size_wing_section!(section, sweep, sigfac; t_cap_min = 0.0, t_web_min = 0.0, P_axial = 0.0)
 
 Calculates Loads and thicknesses for wing sections
+
+The axial force `P_axial` is carried by the caps: the section is sized for the effective moment
+``M + |P|\\, h_{rms}\\, c_\\perp / 2``. The section minimum gauges are applied if larger than `t_cap_min`, `t_web_min`.
 
 !!! details "🔃 Inputs and Outputs"
     **Inputs:**
     - `section::TASOPT.structures.Wing.WingSection`: Wing Section to be sized.
     - `sweep::Float64`: Wing sweep.
     - `sigfac::Float64`: Stress factor
+    - `t_cap_min::Float64`: (keyword, default 0.0) Minimum cap thickness
+    - `t_web_min::Float64`: (keyword, default 0.0) Minimum web thickness
+    - `P_axial::Float64`: (keyword, default 0.0) Axial force in the section [N]; tension or compression add to the cap stress
 
     **Outputs:** [`WingSectionDimensions`](@ref)
 """
-function size_wing_section!(section, sweep, sigfac)
+function size_wing_section!(section, sweep, sigfac; t_cap_min = 0.0, t_web_min = 0.0, P_axial = 0.0)
     shear_load = section.max_shear_load
     moment = section.moment
 
@@ -51,10 +57,14 @@ function size_wing_section!(section, sweep, sigfac)
 
     web_height = cross_section.web_to_box_height * cross_section.thickness_to_chord
 
-    tbweb, Abweb = size_web(tauweb, shear_load, cp, web_height)
+    t_web_floor = max(t_web_min, section.min_web_thickness / cp)
+    t_cap_floor = max(t_cap_min, section.min_cap_thickness / cp)
+
+    tbweb, Abweb = size_web(tauweb, shear_load, cp, web_height; t_min = t_web_floor)
     
-    tbcap, Abcap = size_cap(sigcap, moment, cross_section.thickness_to_chord,
-        cross_section.width_to_chord, h_rms, cs, cosL)
+    moment_effective = moment + abs(P_axial) * h_rms * cp / 2
+    tbcap, Abcap = size_cap(sigcap, moment_effective, cross_section.thickness_to_chord,
+        cross_section.width_to_chord, h_rms, cs, cosL; t_min = t_cap_floor)
 
     # EI_xx
     section.EI[1] = Ecap * cp^4 * (h_rms^3 - (h_rms - 2.0 * tbcap)^3) * cross_section.width_to_chord / 12.0 +
@@ -71,8 +81,1107 @@ function size_wing_section!(section, sweep, sigfac)
 end
 
 """
+    Cantilever
+
+Marker type for a wing without a strut; see [`wing_section_loads`](@ref).
+"""
+struct Cantilever end
+
+"""
+    Braced
+
+Marker type for a wing braced by a strut; see [`wing_case_loads`](@ref).
+"""
+struct Braced end
+
+"""
+    outboard_section_loads!(wing, po, gammat, gammas, Nload, We, neout, dyeout)
+
+Sets the outboard section shear and bending moment at the wing break (strut attachment point).
+
+!!! details "🔃 Inputs and Outputs"
+    **Inputs:**
+    - `wing::TASOPT.structures.Wing`: Wing structure.
+    - `po::Float64`: Wing root loading magnitude.
+    - `gammat::Float64`: Wing outer section taper ratio.
+    - `gammas::Float64`: Wing inner section taper ratio.
+    - `Nload::Int`: Max vertical load factor for wing bending loads.
+    - `We::Float64`: Weight of one engine [N].
+    - `neout::Int`: Number of engines per wing mounted outboard of the wing break.
+    - `dyeout::Float64`: Average spanwise moment arm of the outboard engines about the wing break station ηs [m].
+
+    **Outputs:**
+    - `wing.outboard.max_shear_load` and `wing.outboard.moment` are updated in place.
+"""
+function outboard_section_loads!(wing, po, gammat, gammas, Nload, We, neout, dyeout)
+    etas = wing.layout.ηs
+
+    # Tip roll off Lift (modeled as a point load) and it's moment about ηs
+    dLt = wing.tip_lift_loss * po * wing.layout.root_chord * gammat * wing.outboard.λ
+    dMt = dLt * 0.5 * wing.layout.span * (1.0 - etas)
+
+    # Outboard section:
+    #---- strut-attach shear,moment from outer-wing loading. 
+    #     Note added term to account for any outboard engines.
+    #     If neout = 0 this simplifies to Drela's version which assumes engine
+    #     fixed at ηs locations only.
+    wing.outboard.max_shear_load = (po * wing.layout.span / 4.0) * (gammas + gammat) * (1.0 - etas) +
+                                   dLt - Nload * wing.outboard.weight - Nload * neout * We
+    wing.outboard.moment = (po * wing.layout.span^2 / 24.0) * (gammas + 2.0 * gammat) * (1.0 - etas)^2 +
+                           dMt - Nload * wing.outboard.dyW - Nload * neout * We * dyeout
+    return nothing
+end # outboard_section_loads!
+
+"""
+    wing_engine_arms(wing)
+
+Returns the engine counts and spanwise moment arms for the one engine per wing at `wing.η_engine`.
+
+!!! details "🔃 Inputs and Outputs"
+    **Inputs:**
+    - `wing::TASOPT.structures.Wing`: Wing structure, with the engine location `η_engine`, the span and the wing break
+      and wing root stations in `wing.layout`.
+
+    **Outputs:**
+    - `(neinn, dyeinn, neout, dyeout)`:
+      - `neinn::Int`: Number of engines per wing mounted at or inboard of the wing break.
+      - `dyeinn::Float64`: Spanwise moment arm of the inboard engine about the wing root station ηo [m], zero for an engine inboard of ηo.
+      - `neout::Int`: Number of engines per wing mounted outboard of the wing break.
+      - `dyeout::Float64`: Spanwise moment arm of the outboard engine about the wing break station ηs [m].
+"""
+function wing_engine_arms(wing)
+    half_span = 0.5 * wing.layout.span
+    if wing.η_engine <= wing.layout.ηs
+        return (neinn = 1, dyeinn = max(half_span * (wing.η_engine - wing.layout.ηo), 0.0), neout = 0, dyeout = 0.0)
+    else
+        return (neinn = 0, dyeinn = 0.0, neout = 1, dyeout = half_span * (wing.η_engine - wing.layout.ηs))
+    end
+end # wing_engine_arms
+
+"""
+    wing_section_loads(::Cantilever, wing, po, gammas, Nload, We, neinn, dyeinn)
+
+Sets the inboard section shear and bending moment of a wing without a strut.
+
+!!! details "🔃 Inputs and Outputs"
+    **Inputs:**
+    - `wing::TASOPT.structures.Wing`: Wing structure, with the outboard section loads already set.
+    - `po::Float64`: Wing root loading magnitude.
+    - `gammas::Float64`: Wing inner section taper ratio.
+    - `Nload::Int`: Max vertical load factor for wing bending loads.
+    - `We::Float64`: Weight of one engine [N].
+    - `neinn::Int`: Number of engines per wing mounted at or inboard of the wing break.
+    - `dyeinn::Float64`: Average spanwise moment arm of the inboard engines about the wing root station ηo [m].
+
+    **Outputs:**
+    - `wing.inboard.max_shear_load` and `wing.inboard.moment` are updated in place.
+"""
+function wing_section_loads(::Cantilever, wing, po, gammas, Nload, We, neinn, dyeinn)
+    etao = wing.layout.ηo
+    etas = wing.layout.ηs
+
+    # Modifed to account for bending relief from multiple engines.
+    # dyeinn allows engine to be in locations other than ηs
+    So = wing.outboard.max_shear_load - Nload*neinn*We +
+        0.25*po*wing.layout.span*(1.0+gammas)*(etas-etao) -
+        Nload*wing.inboard.weight
+    Mo = wing.outboard.moment + wing.outboard.max_shear_load*0.5*wing.layout.span*(etas-etao) +
+        (1.0/24.0)*po*wing.layout.span^2*(1.0+2.0*gammas)*(etas-etao)^2 -
+        Nload*wing.inboard.dyW - Nload*neinn*We*dyeinn
+
+    #----- limit So,Mo to Ss,Ms, which might be needed with heavy outboard engine
+    #-      (rules out negatively-tapered structure, deemed not feasible for downloads)
+    wing.inboard.max_shear_load = max(So ,wing.outboard.max_shear_load)
+    wing.inboard.moment = max(Mo ,wing.outboard.moment)
+    return nothing
+end # wing_section_loads
+
+"""
+    wing_case_loads(::Cantilever, wing, po, gammat, gammas, Nload, We, neout, dyeout, neinn, dyeinn)
+
+Returns the root and break loads of a wing without a strut for one load case, as a [`WingCaseLoads`](@ref).
+
+Mutates the section load fields of `wing`; pass a copy to keep them.
+
+!!! details "🔃 Inputs and Outputs"
+    **Inputs:**
+    - `wing::TASOPT.structures.Wing`: Wing structure, with the panel weights of the load case.
+    - `po::Float64`: Wing root loading magnitude.
+    - `gammat::Float64`: Wing outer section taper ratio.
+    - `gammas::Float64`: Wing inner section taper ratio.
+    - `Nload::Int`: Max vertical load factor for wing bending loads.
+    - `We::Float64`: Weight of one engine [N].
+    - `neout::Int`: Number of engines per wing mounted outboard of the wing break.
+    - `dyeout::Float64`: Average spanwise moment arm of the outboard engines about the wing break station ηs [m].
+    - `neinn::Int`: Number of engines per wing mounted at or inboard of the wing break.
+    - `dyeinn::Float64`: Average spanwise moment arm of the inboard engines about the wing root station ηo [m].
+
+    **Outputs:**
+    - `WingCaseLoads`: Shear and moment at the wing root and at the wing break.
+"""
+function wing_case_loads(::Cantilever, wing, po, gammat, gammas, Nload, We, neout, dyeout, neinn, dyeinn)
+    outboard_section_loads!(wing, po, gammat, gammas, Nload, We, neout, dyeout)
+    wing_section_loads(Cantilever(), wing, po, gammas, Nload, We, neinn, dyeinn)
+    return WingCaseLoads(S_root = wing.inboard.max_shear_load, M_root = wing.inboard.moment,
+                         S_break = wing.outboard.max_shear_load, M_break = wing.outboard.moment)
+end # wing_case_loads
+
+"""
+    strut_force_compatibility(M0, EI, L, f_strut; npts = 21)
+
+Returns the vertical reaction `R` of a strut on a wing bay (clamped at the root, supported by the strut at ``x = L``),
+from compatibility of the wing and strut deflections at the attachment. With ``M_0(x)`` the moment of the unbraced bay:
+```math
+R = \\frac{\\delta_0}{f_{ww} + f_s}, \\qquad
+\\delta_0 = \\int_0^L \\frac{M_0\\,(L - x)}{EI}\\,dx, \\qquad
+f_{ww} = \\int_0^L \\frac{(L - x)^2}{EI}\\,dx
+```
+where ``f_s`` is the strut flexibility `f_strut`. The integrals use the trapezoid rule with `npts` points.
+
+!!! details "🔃 Inputs and Outputs"
+    **Inputs:**
+    - `M0::Function`: Bending moment of the unbraced bay [N m] at the distance `x` from the root, `M0(x)`.
+    - `EI::Function`: Bending stiffness of the bay [N m²] at the distance `x` from the root, `EI(x)`.
+    - `L::Float64`: Length of the bay, from the root to the strut attachment [m].
+    - `f_strut::Float64`: Axial flexibility of the strut, referred to the vertical displacement at the attachment [m/N].
+    - `npts::Int`: (keyword, default 21) Number of points of the trapezoid rule.
+
+    **Outputs:**
+    - `R::Float64`: Vertical strut reaction on the wing, against the wing lift [N], with the sign of the load factor.
+"""
+function strut_force_compatibility(M0, EI, L, f_strut; npts = 21)
+    dx = L / (npts - 1)
+    d0 = 0.0
+    f_ww = 0.0
+    for i in 1:npts
+        x = (i - 1) * dx
+        weight = (i == 1 || i == npts) ? 0.5 * dx : dx # trapezoid weights
+        d0 += weight * M0(x) * (L - x) / EI(x)
+        f_ww += weight * (L - x)^2 / EI(x)
+    end
+    return d0 / (f_ww + f_strut)
+end # strut_force_compatibility
+
+"""
+    size_member_box(caps, webs; chord, height_to_chord, width_to_chord, web_to_box_height,
+        tension, compression, buckling_length, K, shear_load, bending_moment = 0.0, sigfac, min_cap_thickness, min_web_thickness)
+
+Sizes the caps and webs of a rectangular box member (strut or jury strut). The caps carry the axial force (tension,
+compression, Euler buckling) and the bending moment of the transverse load (own weight and, for the strut, the shaped strut lift; yield only); the webs carry the shear load.
+Lengths are normalised by the member chord ``c`` as in [`WingCrossSection`](@ref); the sweep is ignored. With box height ``h``
+(`height_to_chord`), width ``w`` (`width_to_chord`) and web height ``h_w`` = `web_to_box_height` ``h``:
+```math
+A_{cap} = 2\\,\\bar t_{cap}\\,w\\,c^2, \\qquad A_{web} = 2\\,\\bar t_{web}\\,h_w\\,c^2
+```
+```math
+EI_{xx} = c^4\\left[E_{cap}\\,\\frac{w\\left(h^3 - (h - 2\\bar t_{cap})^3\\right)}{12} + E_{web}\\,\\frac{\\bar t_{web} h_w^3}{6}\\right], \\qquad
+EI_{yy} = c^4\\left[E_{cap}\\,\\frac{\\bar t_{cap} w^3}{6} + E_{web}\\,\\frac{\\bar t_{web} h_w w^2}{2}\\right]
+```
+with ``EI_{min} = \\min(EI_{xx}, EI_{yy})``. The cap thickness ``\\bar t_{cap}`` is the largest of
+- the yield thickness ``F / (2 w c^2 \\sigma_{cap})``, with ``F`` the larger of tension and compression and
+  ``\\sigma_{cap}`` = `caps.material.σmax * sigfac`. With a `bending_moment` ``M > 0`` it is also at least the
+  [`calc_cap_thickness`](@ref) for ``M + F h c / 2``,
+- the thickness for which both ``EI_{xx}`` and ``EI_{yy}`` reach ``f_u |P_c| (K l)^2 / \\pi^2``, and
+- the minimum gauge `min_cap_thickness / chord`.
+
+The web thickness is the larger of [`calc_web_thickness`](@ref) and the minimum gauge `min_web_thickness / chord`.
+
+!!! details "🔃 Inputs and Outputs"
+    **Inputs:**
+    - `caps::StructuralMember`: Cap material.
+    - `webs::StructuralMember`: Web material.
+    - `chord::Float64`: Chord of the member [m].
+    - `height_to_chord::Float64`: Box height to chord ratio, the thickness-to-chord ratio [-].
+    - `width_to_chord::Float64`: Box width to chord ratio [-].
+    - `web_to_box_height::Float64`: Web height to box height ratio [-].
+    - `tension::Float64`: Axial force of the most tensile case, zero or positive [N].
+    - `compression::Float64`: Axial force of the most compressive case, zero or negative [N].
+    - `buckling_length::Float64`: Member length for Euler buckling [m].
+    - `K::Float64`: Effective-length factor [-].
+    - `shear_load::Float64`: Shear load of the webs [N].
+    - `bending_moment::Float64`: (keyword, default `0.0`) Bending moment of the transverse load carried by the caps [N m].
+    - `sigfac::Float64`: Stress factor applied to the material strengths [-].
+    - `min_cap_thickness::Float64`: Minimum cap gauge [m].
+    - `min_web_thickness::Float64`: Minimum web gauge [m].
+
+    **Outputs:**
+    - `tbcap::Float64`: Cap thickness to chord ratio [-].
+    - `tbweb::Float64`: Web thickness to chord ratio [-].
+    - `area_caps::Float64`: Material area of the caps [m²].
+    - `area_webs::Float64`: Material area of the webs [m²].
+    - `area::Float64`: Material area of the caps and webs [m²].
+    - `EI_min::Float64`: Smaller of the bending stiffnesses ``EI_{xx}`` and ``EI_{yy}`` of the final box [N m²].
+    - `buckling_load::Float64`: Euler buckling load of the box [N].
+    - `criterion::Symbol`: Requirement that sets the cap thickness, `:tension` (yield), `:buckling` or `:gauge`.
+    - `buckling_axis::Symbol`: Bending axis whose buckling requirement needs the larger cap thickness, `:xx` (flapwise),
+    `:yy` (chordwise) or `:none` without compression.
+"""
+function size_member_box(caps, webs; chord, height_to_chord, width_to_chord, web_to_box_height,
+        tension, compression, buckling_length, K, shear_load, bending_moment = 0.0, sigfac, min_cap_thickness, min_web_thickness)
+    c, h, w = chord, height_to_chord, width_to_chord
+    hw = web_to_box_height * h
+    E_cap, E_web = caps.material.E, webs.material.E
+
+    # Webs: shear, with the minimum gauge
+    tbweb = max(calc_web_thickness(webs.material.τmax * sigfac, shear_load, c, hw), min_web_thickness / c)
+
+    # Caps: yield, buckling, minimum gauge
+    F = max(tension, abs(compression))
+    σ_cap = caps.material.σmax * sigfac
+    tb_yield = F / (2 * w * c^2 * σ_cap)
+    if bending_moment > 0.0
+        try
+            tb_yield = max(tb_yield, calc_cap_thickness(σ_cap, bending_moment + F * h * c / 2, h, w, h, c, 1.0))
+        catch err
+            err isa ErrorException || rethrow()
+            error("Strut cap sizing infeasible: the caps cannot carry the bending moment within the box height. ",
+                "Increase the chord or the thickness-to-chord ratio of the member.")
+        end
+    end
+    tb_gauge = min_cap_thickness / c
+
+    # Euler buckling: both EI_xx (flapwise) and EI_yy (chordwise) must reach the required stiffness
+    tb_buckling = 0.0
+    buckling_axis = :none
+    if compression < 0.0
+        EI_req = caps.material.safety_factor * abs(compression) * (K * buckling_length)^2 / pi^2
+
+        # Stiffness the caps must add to the webs
+        EI_caps_xx = max(EI_req - E_web * c^4 * tbweb * hw^3 / 6, 0.0)
+        EI_caps_yy = max(EI_req - E_web * c^4 * tbweb * hw * w^2 / 2, 0.0)
+
+        # EI_xx cap term: E_cap c^4 w (h^3 - (h - 2 tb)^3) / 12 = EI_caps_xx
+        X = 12 * EI_caps_xx / (E_cap * c^4 * w)
+        X < h^3 || error("Strut cap sizing infeasible: EI_xx (flapwise bending, box height direction) cannot reach ",
+            "the buckling stiffness within the box height. Increase the chord or the thickness-to-chord ratio of the member.")
+        tb_xx = 0.5 * (h - cbrt(h^3 - X))
+
+        # EI_yy cap term: E_cap c^4 tb w^3 / 6 = EI_caps_yy
+        tb_yy = 6 * EI_caps_yy / (E_cap * c^4 * w^3)
+        tb_yy <= h / 2 || error("Strut cap sizing infeasible: EI_yy (chordwise bending, box width direction) cannot reach ",
+            "the buckling stiffness within the box height. Increase the chord or the width-to-chord ratio of the member.")
+
+        tb_buckling = max(tb_xx, tb_yy)
+        buckling_axis = tb_xx >= tb_yy ? :xx : :yy
+    end
+
+    tbcap = max(tb_yield, tb_buckling, tb_gauge)
+    criterion = tbcap == tb_yield ? :tension : (tbcap == tb_buckling ? :buckling : :gauge)
+
+    EI_xx = E_cap * c^4 * w * (h^3 - (h - 2 * tbcap)^3) / 12 + E_web * c^4 * tbweb * hw^3 / 6
+    EI_yy = E_cap * c^4 * tbcap * w^3 / 6 + E_web * c^4 * tbweb * hw * w^2 / 2
+    EI_min = min(EI_xx, EI_yy)
+
+    area_caps = 2 * tbcap * w * c^2
+    area_webs = 2 * tbweb * hw * c^2
+    return (tbcap = tbcap, tbweb = tbweb, area_caps = area_caps, area_webs = area_webs, area = area_caps + area_webs,
+        EI_min = EI_min, buckling_load = pi^2 * EI_min / (K * buckling_length)^2, criterion = criterion,
+        buckling_axis = buckling_axis)
+end # size_member_box
+
+"""
+    strut_buckling_length(strut_length, eta_strut)
+    strut_buckling_length(strut_length, ::Nothing)
+
+Returns the strut length used for Euler buckling. A vertical jury strut at the fraction `eta_strut` of the strut
+length from the fuselage end restrains the strut laterally, so the strut buckles over the longer part,
+``\\max(\\eta_{strut}, 1 - \\eta_{strut})\\,l``. Without a jury strut (`nothing`) it is the full length.
+
+!!! details "🔃 Inputs and Outputs"
+    **Inputs:**
+    - `strut_length::Float64`: Strut length [m].
+    - `eta_strut::Union{Nothing,Float64}`: Position of the jury strut along the strut, as a fraction of the strut length, or `nothing`.
+
+    **Outputs:**
+    - `l_buckling::Float64`: Strut length for buckling [m].
+"""
+strut_buckling_length(strut_length, eta_strut) = max(eta_strut, 1.0 - eta_strut) * strut_length
+strut_buckling_length(strut_length, ::Nothing) = strut_length
+
+"""
+    strut_bay_load_factors(spanload_exponent, ξ_start, ξ_end; npts = 2001)
+
+Returns the factors `(κ_M, κ_V)` by which the shaped strut lift raises the bending moment and the end shear of the strut bay
+`ξ ∈ [ξ_start, ξ_end]`, relative to a uniform load of the same mean intensity (the total strut lift over the strut length) on that bay.
+The bay is a simply supported beam and the lift intensity is ``\\propto (4\\xi(1-\\xi))^p`` (``p`` = `spanload_exponent`), with
+``\\xi`` = 0 at the fuselage end and 1 at the wing end of the strut, as set by the strut circulation shape. Both factors are 1 for ``p = 0``.
+`κ_M` is `max M / (q l_b^2 / 8)` and `κ_V` is `max(R_left, R_right) / (q l_b / 2)`, with the mean intensity `q` and bay length `l_b`.
+
+!!! details "🔃 Inputs and Outputs"
+    **Inputs:**
+    - `spanload_exponent::Float64`: Strut spanload exponent ``p``.
+    - `ξ_start::Float64`, `ξ_end::Float64`: Bay ends as fractions of the strut length from the fuselage end.
+    - `npts::Int64`: Number of stations along the bay (`npts - 1` quadrature cells).
+
+    **Outputs:**
+    - `κ_M::Float64`: Bending moment factor.
+    - `κ_V::Float64`: End shear factor.
+"""
+function strut_bay_load_factors(spanload_exponent, ξ_start, ξ_end; npts = 2001)
+    ncell = npts - 1
+    shape(ξ) = (4 * ξ * (1 - ξ))^spanload_exponent
+    mean_shape = sum(shape((i - 0.5) / ncell) for i in 1:ncell) / ncell
+
+    bay = ξ_end - ξ_start
+    dξ = bay / ncell
+    ξ_mid = [ξ_start + (i - 0.5) * dξ for i in 1:ncell]
+    load = shape.(ξ_mid) ./ mean_shape * dξ # lift on each cell for unit strut lift and unit strut length
+    R_left = sum(load[i] * (ξ_end - ξ_mid[i]) for i in 1:ncell) / bay
+    R_right = sum(load) - R_left
+
+    # moment at station k: left reaction minus the load to its left, taken about the station
+    load_left, moment_arm_left = cumsum(load), cumsum(load .* (collect(1:ncell) .- 0.5))
+    M_max = maximum(dξ * (R_left * k - (k * load_left[k] - moment_arm_left[k])) for k in 1:ncell-1)
+    return M_max / (bay^2 / 8), max(R_left, R_right) / (bay / 2)
+end
+
+"""
+    strut_end_shares(spanload_exponent, η_jury; npts = 2001)
+
+Returns the shares `(f_F, f_J, f_W)` of the shaped strut lift that the fuselage end, the jury strut and the wing end of the
+strut carry, for a jury strut at the fraction `η_jury` of the strut length from the fuselage end. The strut is two simply
+supported bays, `[0, η_jury]` and `[η_jury, 1]`, with the lift intensity and quadrature of [`strut_bay_load_factors`](@ref).
+The shares add up to 1.
+
+!!! details "🔃 Inputs and Outputs"
+    **Inputs:**
+    - `spanload_exponent::Float64`: Strut spanload exponent ``p``.
+    - `η_jury::Float64`: Position of the jury strut along the strut, between 0 and 1.
+    - `npts::Int64`: Number of stations along the strut (`npts - 1` quadrature cells).
+
+    **Outputs:**
+    - `f_F::Float64`, `f_J::Float64`, `f_W::Float64`: Fuselage-end, jury and wing-end shares of the strut lift.
+"""
+function strut_end_shares(spanload_exponent, η_jury; npts = 2001)
+    ncell = npts - 1
+    shape(ξ) = (4 * ξ * (1 - ξ))^spanload_exponent
+
+    function bay_reactions(ξ_start, ξ_end)
+        bay = ξ_end - ξ_start
+        dξ = bay / ncell
+        ξ_mid = [ξ_start + (i - 0.5) * dξ for i in 1:ncell]
+        load = shape.(ξ_mid) * dξ
+        R_left = sum(load[i] * (ξ_end - ξ_mid[i]) for i in 1:ncell) / bay
+        return R_left, sum(load) - R_left
+    end
+    f_F, to_jury_fuselage_bay = bay_reactions(0.0, η_jury)
+    to_jury_wing_bay, f_W = bay_reactions(η_jury, 1.0)
+    f_J = to_jury_fuselage_bay + to_jury_wing_bay
+    total = f_F + f_J + f_W # normalises the lift on the two bays to 1
+    return f_F / total, f_J / total, f_W / total
+end
+
+"""
+    strut_attach_offset(wing)
+
+Streamwise offset [m] of the strut fuselage end from the wing box: `wing.strut.x_strut_attach - wing.layout.box_x`,
+or 0 if the attach is NaN (the attach follows the wing box).
+"""
+strut_attach_offset(wing) = isnan(wing.strut.x_strut_attach) ? 0.0 : wing.strut.x_strut_attach - wing.layout.box_x
+
+"""
+    strut_sweep(wing)
+
+Planform sweep [deg] of the strut, signed and positive aft: `atand(Δx / ΔY)`, where ``Δx = ΔY \tan Λ - dx`` is the streamwise
+run of the strut, ``ΔY`` the spanwise run from the fuselage end to the break and `dx` the [`strut_attach_offset`](@ref).
+Equals the wing sweep when the attach is NaN.
+"""
+function strut_sweep(wing)
+    ΔY = 0.5 * wing.layout.break_span - 0.5 * wing.layout.root_span
+    return atand((ΔY * tand(wing.layout.sweep) - strut_attach_offset(wing)) / ΔY)
+end
+
+"""
+    size_jury!(wing, etao, etas, sigfac, sinL, cosL; n_wings = 2.0, section_loads_envelope = nothing)
+
+Sizes the vertical jury strut `wing.jury` of a truss-braced wing: geometry, axial force, area, buckling load,
+weight and weight moment. Its tension `jury.axial_force_tension` and compression are the envelope values
+`jury_tension` and `jury_compression` over the wing sizing load cases (see [`evaluate_wing_sizing_cases!`](@ref)).
+Without envelope values (`section_loads_envelope` is `nothing` or has no jury fields) the tension and compression are 0.
+Its length is ``(1 - \\eta_{strut}) \\sqrt{z^2 + \\Delta x_{attach}^2}`` and its wing
+attachment is ``\\eta_o + \\eta_{strut} (\\eta_s - \\eta_o)``. It is a pinned (``K = 1``) box sized by
+[`size_member_box`](@ref) for this compression and tension, with no shear. Its chord is `jury.chord_to_strut_chord` times the
+strut chord at the jury attachment; its box height is `jury.thickness_to_chord` times the chord and the other box
+ratios are those of the main strut. The weight includes
+``1 + f_{added}`` (`jury.weight_frac_added`) and `jury.dxW` is the weight times the streamwise offset
+``\\eta_{strut}\\,\\Delta Y \\tan\\Lambda + \\tfrac12 \\Delta x_{attach} (1 - \\eta_{strut})`` of the jury, with ``\\Delta x_{attach}`` the [`strut_attach_offset`](@ref).
+
+!!! details "🔃 Inputs and Outputs"
+    **Inputs:**
+    - `wing::TASOPT.structures.Wing`: Wing structure, with the main strut already sized.
+    - `etao::Float64`: Non-dimensional span coordinate of the wing root station.
+    - `etas::Float64`: Non-dimensional span coordinate of the strut attachment.
+    - `sigfac::Float64`: Stress Factor.
+    - `sinL::Float64`: Sine of the wing sweep.
+    - `cosL::Float64`: Cosine of the wing sweep.
+    - `n_wings::Float64`: (keyword, default 2.0) Number of wings.
+    - `section_loads_envelope::Union{Nothing,NamedTuple}`: (keyword, default `nothing`) Envelope of [`evaluate_wing_sizing_cases!`](@ref).
+"""
+function size_jury!(wing, etao, etas, sigfac, sinL, cosL; n_wings = 2.0, section_loads_envelope = nothing)
+    jury, strut = wing.jury, wing.strut
+
+    jury.eta_wing = etao + jury.eta_strut * (etas - etao)
+    dx = strut_attach_offset(wing)
+    jury.length = (1.0 - jury.eta_strut) * sqrt(strut.z^2 + dx^2) # jury spans the remaining streamwise and vertical run of the strut
+    envelope = isnothing(section_loads_envelope) ? (;) : section_loads_envelope
+    jury.axial_force_compression = get(envelope, :jury_compression, 0.0)
+    jury.axial_force_tension = get(envelope, :jury_tension, 0.0)
+
+    jury.chord = jury.chord_to_strut_chord * (strut.root_chord + (strut.chord - strut.root_chord) * jury.eta_strut) # strut chord at the jury attachment
+    box = size_member_box(jury.caps, jury.webs;
+        chord = jury.chord, height_to_chord = jury.thickness_to_chord, width_to_chord = strut.box_width_to_chord,
+        web_to_box_height = strut.web_to_box_height, tension = jury.axial_force_tension, compression = jury.axial_force_compression,
+        buckling_length = jury.length, K = 1.0, shear_load = 0.0, sigfac = sigfac,
+        min_cap_thickness = jury.min_cap_thickness, min_web_thickness = jury.min_web_thickness)
+    jury.area = box.area
+    jury.buckling_load = box.buckling_load
+
+    jury.weight = n_wings * gee * jury.length * (jury.caps.material.ρ * box.area_caps + jury.webs.material.ρ * box.area_webs) *
+                  (1.0 + jury.weight_frac_added)
+    # jury attaches to the strut point at fraction eta_strut, so its streamwise centroid is the wing end of that run plus half the rest
+    jury.dxW = jury.weight * (jury.eta_strut * 0.5 * wing.layout.span * (etas - etao) * sinL / cosL + 0.5 * dx * (1.0 - jury.eta_strut))
+    return nothing
+end # size_jury!
+
+"""
+    unbraced_inboard_loads(wing, po, gammas, Nload, We, neinn, dyeinn, x; F_wing = 0.0, F_jury = 0.0, x_jury = 0.0)
+
+Returns the shear and bending moment at the distance `x` from the wing root station ηo, in the inboard bay
+of the wing clamped at the root without a strut. The bay is loaded by the break loads
+(`wing.outboard.max_shear_load`, `wing.outboard.moment`), a linear spanload from `po` at the root to `po*gammas`
+at the break, the inboard panel weight and the inboard engines. The upward point load `F_wing` at the strut
+attachment loads the bay for `x < L`, and the upward point load `F_jury` of the jury strut at the distance `x_jury` from the
+root loads it for `x < x_jury`. At `x = 0` they are the root loads of [`wing_section_loads`](@ref) before its limiting.
+
+!!! details "🔃 Inputs and Outputs"
+    **Inputs:**
+    - `wing::TASOPT.structures.Wing`: Wing structure, with the outboard section loads already set.
+    - `po::Float64`: Wing root loading magnitude.
+    - `gammas::Float64`: Wing inner section taper ratio.
+    - `Nload::Int`: Max vertical load factor for wing bending loads.
+    - `We::Float64`: Weight of one engine [N].
+    - `neinn::Int`: Number of engines per wing mounted at or inboard of the wing break.
+    - `dyeinn::Float64`: Average spanwise moment arm of the inboard engines about the wing root station ηo [m].
+    - `x::Float64`: Distance from the wing root station ηo, between 0 and the bay length [m].
+    - `F_wing::Float64`: (keyword, default 0.0) Upward point load at the strut attachment, at the end of the bay [N].
+    - `F_jury::Float64`: (keyword, default 0.0) Upward point load of the jury strut on the wing [N].
+    - `x_jury::Float64`: (keyword, default 0.0) Distance of the jury strut from the wing root station ηo [m].
+
+    **Outputs:**
+    - `(S, M)`: Shear [N] and bending moment [N m], positive for upward lift loading.
+"""
+function unbraced_inboard_loads(wing, po, gammas, Nload, We, neinn, dyeinn, x; F_wing = 0.0, F_jury = 0.0, x_jury = 0.0)
+    L = 0.5 * wing.layout.span * (wing.layout.ηs - wing.layout.ηo)
+    u = L - x
+
+    # Spanload at x and its slope
+    p_x = po * (1.0 - (1.0 - gammas) * x / L)
+    dp = po * (1.0 - gammas) / L
+
+    S = wing.outboard.max_shear_load + p_x * u - dp * u^2 / 2
+    M = wing.outboard.moment + wing.outboard.max_shear_load * u + p_x * u^2 / 2 - dp * u^3 / 3
+
+    if x < L
+        S += F_wing
+        M += F_wing * u
+    end
+    if x < x_jury
+        S += F_jury
+        M += F_jury * (x_jury - x)
+    end
+    if wing.inboard.weight != 0.0 && x <= wing.inboard.dyW / wing.inboard.weight
+        S -= Nload * wing.inboard.weight
+        M -= Nload * (wing.inboard.dyW - wing.inboard.weight * x)
+    end
+    if x <= dyeinn
+        S -= Nload * neinn * We
+        M -= Nload * neinn * We * (dyeinn - x)
+    end
+    return (S = S, M = M)
+end # unbraced_inboard_loads
+
+"""
+    strut_reaction(wing, po, gammas, M0, L, ls, F_wing; F_jury = 0.0, x_jury = 0.0)
+
+Returns the vertical strut reaction on the inboard bay of a braced wing, positive upward. It is the result of
+[`strut_force_compatibility`](@ref) with the unbraced bay moment `M0(x)`, a bending stiffness
+varying linearly from `wing.inboard.EI[1]` at the root to `wing.outboard.EI[1]` at the attachment, and the strut flexibility
+```math
+f_s = \\frac{l_s}{E_s\\,A_s\\,\\sin^2\\theta}, \\qquad \\sin\\theta = \\frac{z}{l_s}
+```
+with the strut area ``A_s`` (`wing.strut.area`) and stiffness from the previous sizing iteration.
+While the stiffness and the strut area are zero (first sizing iteration), the start-up value
+`R = (po b / 12) (ηs - ηo) (1 + 2 γs) + S_break + F_wing + F_jury x_jury / L` is returned instead.
+
+!!! details "🔃 Inputs and Outputs"
+    **Inputs:**
+    - `wing::TASOPT.structures.Wing`: Wing structure, with the outboard section loads already set.
+    - `po::Float64`: Wing root loading magnitude.
+    - `gammas::Float64`: Wing inner section taper ratio.
+    - `M0::Function`: Bending moment of the unbraced inboard bay [N m] at the distance `x` from the root, `M0(x)`.
+    - `L::Float64`: Length of the inboard bay, from the root to the strut attachment [m].
+    - `ls::Float64`: Length of the strut in the plane of the strut [m].
+    - `F_wing::Float64`: Upward point load at the strut attachment from the loads of the strut [N], see [`wing_case_loads`](@ref).
+    - `F_jury::Float64`: (keyword, default 0.0) Upward point load of the jury strut on the wing [N].
+    - `x_jury::Float64`: (keyword, default 0.0) Distance of the jury strut from the wing root station ηo [m].
+
+    **Outputs:**
+    - `R::Float64`: Vertical strut reaction on the wing [N].
+"""
+function strut_reaction(wing, po, gammas, M0, L, ls, F_wing; F_jury = 0.0, x_jury = 0.0)
+    EI_root, EI_attach, A_strut = wing.inboard.EI[1], wing.outboard.EI[1], wing.strut.area
+
+    # Stiffness and strut area are zero in the first sizing iteration; use the closed-form start-up value.
+    stiffness_known = EI_root > 0.0 && EI_attach > 0.0 && A_strut > 0.0
+
+    if stiffness_known
+        EI(x) = EI_root + (EI_attach - EI_root) * x / L
+        f_strut = ls / (wing.strut.caps.material.E * A_strut * (wing.strut.z / ls)^2)
+        return strut_force_compatibility(M0, EI, L, f_strut)
+    else
+        return (po * wing.layout.span / 12.0) * (wing.layout.ηs - wing.layout.ηo) * (1.0 + 2.0 * gammas) +
+               wing.outboard.max_shear_load + F_wing + F_jury * x_jury / L
+    end
+end # strut_reaction
+
+"""
+    strut_lift_on_strut(wing, po, gammat, gammas)
+
+Returns the lift on the strut of one wing for the root loading `po` of the wing, which carries the share ``1 - k`` of
+the wing and strut lift ([`strut_lift_share`](@ref); ``k = 0`` without strut lift). With the span factor ``K_p`` of
+[`wing_lift_span_factor`](@ref):
+```math
+F_{strut} = \\frac{k}{1 - k}\\, \\frac{p_o K_p b}{2}
+```
+It has the sign of `po`.
+
+!!! details "🔃 Inputs and Outputs"
+    **Inputs:**
+    - `wing::TASOPT.structures.Wing`: Wing structure, with the strut data.
+    - `po::Float64`: Wing root loading magnitude, already reduced by the factor ``1 - k``.
+    - `gammat::Float64`: Wing outer section taper ratio of the spanload of `po`, `wing.outboard.λ * rclt`.
+    - `gammas::Float64`: Wing inner section taper ratio of the spanload of `po`, `wing.inboard.λ * rcls`.
+
+    **Outputs:**
+    - `F_strut::Float64`: Lift on the strut of one wing [N].
+"""
+function strut_lift_on_strut(wing, po, gammat, gammas)
+    k = strut_lift_share(wing)
+    return k / (1.0 - k) * po * wing_lift_span_factor(wing, gammat, gammas) * wing.layout.span / 2.0
+end # strut_lift_on_strut
+
+"""
+    strut_wing_end_lift(wing, F_strut)
+
+Returns the part of the strut lift `F_strut` that loads the wing, as a point load at the attachment. The strut has
+pinned ends and its loading ``(4\\xi(1-\\xi))^p`` is symmetric, with the centroid fraction ``\\xi_{cp} = 1/2`` of
+[`strut_lift_centroid_fraction`](@ref) from the fuselage end, so ``F_{wing} = \\xi_{cp} F_{strut}``.
+
+!!! details "🔃 Inputs and Outputs"
+    **Inputs:**
+    - `wing::TASOPT.structures.Wing`: Wing structure, with `wing.strut.spanload_exponent`.
+    - `F_strut::Float64`: Lift on the strut of one wing [N].
+
+    **Outputs:**
+    - `F_wing::Float64`: Part of the strut lift at the wing end of the strut [N], with the sign of `F_strut`.
+"""
+strut_wing_end_lift(wing, F_strut) = strut_lift_centroid_fraction() * F_strut
+
+"""
+    strut_end_loads(wing, F_strut, strut_inertia_load, L, has_jury)
+
+Returns the loads that the strut of one wing puts on the wing, for the strut lift `F_strut` and the uniform downward
+load `strut_inertia_load` (strut weight and fuel inertia) on a bay of length `L`, as `(F_wing, F_jury, x_jury, fuselage_share, wing_end_lift)`:
+the upward point loads at the strut attachment and at the jury strut, the distance of the jury strut from the root station
+(0 without a jury), the share of `strut_inertia_load` at the fuselage end of the strut and the part of `F_strut` at the wing end.
+See [`wing_case_loads`](@ref).
+"""
+function strut_end_loads(wing, F_strut, strut_inertia_load, L, has_jury)
+    if has_jury
+        η_jury = wing.jury.eta_strut
+        _, f_J, f_W = strut_end_shares(wing.strut.spanload_exponent, η_jury)
+        return (F_wing = f_W * F_strut - (1 - η_jury) * strut_inertia_load / 2, F_jury = f_J * F_strut - strut_inertia_load / 2, x_jury = η_jury * L,
+                fuselage_share = η_jury / 2, wing_end_lift = f_W * F_strut)
+    end
+    wing_end_lift = strut_wing_end_lift(wing, F_strut)
+    return (F_wing = wing_end_lift - strut_inertia_load / 2, F_jury = 0.0, x_jury = 0.0, fuselage_share = 0.5, wing_end_lift = wing_end_lift)
+end
+
+"""
+    strut_fuselage_end_force(wing, R, ls; uniform_load = 0.0, fuselage_share = 0.5)
+
+Returns the axial force of the strut at its fuselage end, positive in tension, for the strut reaction `R`, the strut
+length `ls` and the uniform downward load `uniform_load` (strut weight and fuel inertia, see [`wing_case_loads`](@ref)),
+of which the share `fuselage_share` acts at the fuselage end of the strut:
+```math
+T_f = R\\,\\frac{l_s}{z} - s_F\\,Q\\,\\frac{z}{l_s}
+```
+The strut lift acts normal to the strut, so it adds no axial force.
+
+!!! details "🔃 Inputs and Outputs"
+    **Inputs:**
+    - `wing::TASOPT.structures.Wing`: Wing structure, with the strut height `wing.strut.z`.
+    - `R::Float64`: Strut reaction on the wing [N], see [`strut_reaction`](@ref).
+    - `ls::Float64`: Length of the strut in the plane of the strut [m].
+    - `uniform_load::Float64`: (keyword, default 0.0) Uniform downward load ``Q`` on the strut of one wing (inertia of strut weight and fuel) [N].
+    - `fuselage_share::Float64`: (keyword, default 0.5) Share ``s_F`` of `uniform_load` that acts at the fuselage end of the strut.
+
+    **Outputs:**
+    - `T_f::Float64`: Axial force of the strut at the fuselage end [N].
+"""
+strut_fuselage_end_force(wing, R, ls; uniform_load = 0.0, fuselage_share = 0.5) =
+    R * ls / wing.strut.z - fuselage_share * uniform_load * wing.strut.z / ls
+
+"""
+    wing_case_loads(::Braced, wing, po, gammat, gammas, Nload, We, neout, dyeout, neinn, dyeinn;
+        strut_lift = 0.0, strut_fuel_load = 0.0, has_jury = false)
+
+Returns the root and break loads, the strut force and the axial force of a wing braced by a strut for one load
+case, as a [`WingCaseLoads`](@ref). The inboard bay of length ``L = (b/2)(η_s - η_o)`` is that of
+[`unbraced_inboard_loads`](@ref), clamped at the root and supported by the strut at the break with the reaction `R` of
+[`strut_reaction`](@ref). `po` is the root loading of the wing, which carries the share ``1-k`` of the lift
+(see [`strut_lift_share`](@ref), [`wing_case_root_loading`](@ref)).
+
+The strut has pinned ends, the fuselage end at the origin and the wing end at ``(L, z)``. The vertical lift
+``F_{strut}`` acts at ``\\xi_{cp} L`` normal to the strut, as ``F_{strut}/\\cos\\Gamma`` with the strut angle
+``\\Gamma = \\operatorname{atan}(z/L)``, so it adds the inboard horizontal force ``F_{strut}\\tan\\Gamma`` and no axial force
+in the strut. The uniform downward load ``Q = W_s + F_{fuel}`` is the inertia of the strut weight
+``W_s = N\\, W_{strut}/2`` (`wing.strut.weight` of the previous sizing iteration, both wings) and of the strut fuel ``F_{fuel}`` (`strut_fuel_load`,
+positive downward). Without a jury, the strut is a simply supported beam: each end carries half of ``Q``, the wing end
+carries ``F_{wing} = \\xi_{cp} F_{strut} - Q/2`` and the fuselage end governs, in tension and in compression:
+```math
+T = T_f = R\\,\\frac{l_s}{z} - \\frac{Q}{2}\\frac{z}{l_s}, \\qquad P = -R\\,\\frac{L}{z} - \\xi_{cp}\\,F_{strut}\\,\\frac{z}{L}, \\qquad l_s = \\sqrt{z^2 + L^2}
+```
+With `has_jury`, a vertical jury strut at the fraction ``\\eta`` of the strut (`wing.jury.eta_strut`) is a rigid support of two
+simply supported strut bays. The fuselage end, the jury and the wing end carry the shares ``(f_F, f_J, f_W)`` of the strut
+lift ([`strut_end_shares`](@ref)) and the shares ``(\\eta/2, 1/2, (1-\\eta)/2)`` of ``Q``. The jury loads the wing with the upward
+force ``J = f_J F_{strut} - Q/2`` at the distance ``\\eta L`` from the root, and the wing end carries
+``F_{wing} = f_W F_{strut} - (1-\\eta) Q/2``. The jury is vertical, so it adds no horizontal force, and
+```math
+T = R\\,\\frac{l_s}{z} - \\eta\\frac{Q}{2}\\frac{z}{l_s}, \\qquad P = -R\\,\\frac{L}{z} - f_W\\,F_{strut}\\,\\frac{z}{L}
+```
+`T` is positive in tension. `P` is the axial force in the inboard wing, positive in tension, so an under-wing strut in a
+pull-up compresses the wing.
+
+The returned loads are
+- `S_root`, `M_root`: root shear and moment, ``S_0(0) - R`` and ``M_0(0) - R L``;
+- `S_break`, `M_break`: the outboard section loads;
+- `inboard_stations`, `inboard_shear`, `inboard_moment`: 11 stations from the root to the attachment with the shear
+  ``S_0(x) - R`` and moment ``M_0(x) - R (L - x)`` (the last station excludes the point load `F_wing`);
+- `M_inboard_extreme`: the largest magnitude of `inboard_moment`;
+- `strut_reaction`, `strut_force` (``T``), `P_axial_inboard` (``P``), `strut_lift` (``F_{strut}``, with the sign of the load factor)
+`strut_fuel_load` (``F_{fuel}``), `strut_weight_load` (``W_s``) and `jury_force` (``J``, 0 without a jury; the axial force of the jury is ``-J``, negative in compression).
+
+Limitations: the offset torque of the strut joint is not modelled, and the panel weights are those of the design cruise
+mass state in every case. `wing.strut.force_vertical` and `wing.strut.force_horizontal` of [`wing_weights!`](@ref) are the
+components of ``T_f`` along the strut axis, not the exact fuselage pin force.
+
+Mutates `wing.outboard.max_shear_load` and `wing.outboard.moment`; pass a copy to keep them.
+
+!!! details "🔃 Inputs and Outputs"
+    **Inputs:**
+    - `wing::TASOPT.structures.Wing`: Wing structure, with the panel weights of the load case, the strut
+      geometry and the stiffness and strut area of the previous sizing iteration.
+    - `po::Float64`: Wing root loading magnitude, reduced by the strut lift share (see above).
+    - `gammat::Float64`: Wing outer section taper ratio.
+    - `gammas::Float64`: Wing inner section taper ratio.
+    - `Nload::Int`: Max vertical load factor for wing bending loads.
+    - `We::Float64`: Weight of one engine [N].
+    - `neout::Int`: Number of engines per wing mounted outboard of the wing break.
+    - `dyeout::Float64`: Average spanwise moment arm of the outboard engines about the wing break station ηs [m].
+    - `neinn::Int`: Number of engines per wing mounted at or inboard of the wing break.
+    - `dyeinn::Float64`: Average spanwise moment arm of the inboard engines about the wing root station ηo [m].
+    - `strut_lift::Float64`: (keyword, default 0.0) Lift on the strut of one wing [N], with the sign of the load factor.
+    - `strut_fuel_load::Float64`: (keyword, default 0.0) Inertia load of the fuel in the strut of one wing, positive downward [N].
+    - `has_jury::Bool`: (keyword, default `false`) Whether the strut has a vertical jury strut at `wing.jury.eta_strut`.
+
+    **Outputs:**
+    - `WingCaseLoads`: Shear and moment at the wing root and at the wing break, the shear and moment along the
+      inboard wing, the extreme inboard moment, the strut reaction and force, the lift, fuel and weight load on the strut,
+      the jury force and the axial force in the inboard wing.
+"""
+function wing_case_loads(::Braced, wing, po, gammat, gammas, Nload, We, neout, dyeout, neinn, dyeinn;
+        strut_lift = 0.0, strut_fuel_load = 0.0, has_jury = false)
+    outboard_section_loads!(wing, po, gammat, gammas, Nload, We, neout, dyeout)
+
+    L = 0.5 * wing.layout.span * (wing.layout.ηs - wing.layout.ηo)
+    z = wing.strut.z
+    ls = sqrt(z^2 + L^2)
+
+    # uniform downward load on the strut of one wing: strut weight and fuel inertia
+    strut_weight_load = Nload * wing.strut.weight / 2
+    strut_inertia_load = strut_weight_load + strut_fuel_load
+    (; F_wing, F_jury, x_jury, fuselage_share, wing_end_lift) = strut_end_loads(wing, strut_lift, strut_inertia_load, L, has_jury)
+    inboard_loads(x) = unbraced_inboard_loads(wing, po, gammas, Nload, We, neinn, dyeinn, x; F_wing, F_jury, x_jury)
+    M0(x) = inboard_loads(x).M
+    R = strut_reaction(wing, po, gammas, M0, L, ls, F_wing; F_jury, x_jury)
+
+    stations = range(0.0, L; length = 11)
+    M_stations = [M0(x) - R * (L - x) for x in stations]
+    S_stations = [inboard_loads(x).S - R for x in stations]
+    strut_force = strut_fuselage_end_force(wing, R, ls; uniform_load = strut_inertia_load, fuselage_share)
+
+    root = inboard_loads(0.0)
+    return WingCaseLoads(S_root = root.S - R, M_root = root.M - R * L,
+                         S_break = wing.outboard.max_shear_load, M_break = wing.outboard.moment,
+                         M_inboard_extreme = M_stations[argmax(abs.(M_stations))],
+                         P_axial_inboard = -R * L / z - wing_end_lift * z / L, strut_force = strut_force,
+                         inboard_stations = collect(stations), inboard_shear = S_stations,
+                         inboard_moment = M_stations, strut_reaction = R, strut_lift = strut_lift,
+                         strut_fuel_load = strut_fuel_load,
+                         strut_weight_load = strut_weight_load, jury_force = F_jury)
+end # wing_case_loads
+
+"""
+    far_manoeuvre_load_factor(W_MTO)
+
+Returns the positive manoeuvre load factor of FAR/CS 25.337 (n+) for maximum takeoff weight `W_MTO`:
+```math
+n = 2.1 + \\frac{24000}{W_{lb} + 10000}, \\quad 2.5 \\le n \\le 3.8
+```
+where ``W_{lb}`` is `W_MTO` in pounds-force.
+
+!!! details "🔃 Inputs and Outputs"
+    **Inputs:**
+    - `W_MTO::Float64`: Maximum takeoff weight [N].
+
+    **Outputs:**
+    - `n::Float64`: Positive manoeuvre load factor [-].
+"""
+far_manoeuvre_load_factor(W_MTO) = clamp(2.1 + 24000 / (W_MTO / 4.4482216152605 + 10000), 2.5, 3.8)
+
+"""
+    wing_case_load_factor(name, case, W_MTO, far_load_factor; wing = nothing, W_lift = NaN, Mach_cruise = NaN, V_cruise_EAS = 0.0)
+
+Returns the load factor of a wing sizing load case. The `case` is not modified.
+- `Gust` cases: ``n = 1 + \\mathrm{sign}(n_{case})\\,\\Delta n``, with `n_case = case.load_factor` (only its sign is used) and
+  ``\\Delta n`` from [`gust_load_increment`](@ref).
+- Other cases: `case.load_factor`, except `:pullup` and `:pullup_light` if `far_load_factor` is `true`, which use
+  [`far_manoeuvre_load_factor`](@ref). The gust keywords are ignored.
+
+!!! details "🔃 Inputs and Outputs"
+    **Inputs:**
+    - `name::Symbol`: Name of the case in `WingSizingLoads`.
+    - `case::WingLoadCase`: Wing sizing load case.
+    - `W_MTO::Float64`: Maximum takeoff weight of the current sizing iteration [N].
+    - `far_load_factor::Bool`: Whether the positive manoeuvre cases use the FAR/CS 25.337 load factor (`Options.opt_far_load_factor`).
+    - `wing::TASOPT.structures.Wing`: (keyword, `Gust` cases only) Wing structure, with the layout area `S`, span `span`, `AR` and `sweep`.
+    - `W_lift::Float64`: (keyword, `Gust` cases only) Aircraft weight carried by the wing lift in the mass state of the case [N].
+    - `Mach_cruise::Float64`: (keyword, `Gust` cases only) Cruise Mach number, for the lift curve slope.
+    - `V_cruise_EAS::Float64`: (keyword, `Gust` cases only, default 0.0) Cruise equivalent airspeed [m/s], used if the case has no speed of its own.
+
+    **Outputs:**
+    - `n::Float64`: Load factor of the case [-].
+"""
+function wing_case_load_factor(name, case, W_MTO, far_load_factor;
+        wing = nothing, W_lift = NaN, Mach_cruise = NaN, V_cruise_EAS = 0.0)
+    if case.kind == WingLoadKind.Gust
+        V_EAS = case.gust_speed_EAS > 0 ? case.gust_speed_EAS : V_cruise_EAS
+        if !(V_EAS > 0) || !(0 <= Mach_cruise < 1)
+            throw(ArgumentError("gust sizing cases need a positive speed (case.gust_speed_EAS or V_cruise_EAS) and a subsonic Mach_cruise; got V_EAS = $V_EAS, Mach_cruise = $Mach_cruise"))
+        end
+        if wing === nothing || isnan(W_lift)
+            throw(ArgumentError("gust sizing cases need the keywords wing and W_lift"))
+        end
+        S, span = wing.layout.S, wing.layout.span
+        CL_alpha = wing_lift_curve_slope(wing.layout.AR, wing.layout.sweep, Mach_cruise)
+        Δn = gust_load_increment(W_lift / S, S / span, CL_alpha, case.gust_velocity_EAS, V_EAS)
+        return 1 + sign(case.load_factor) * Δn
+    end
+    if far_load_factor && (name === :pullup || name === :pullup_light)
+        return far_manoeuvre_load_factor(W_MTO)
+    end
+    return case.load_factor
+end # wing_case_load_factor
+
+"""
+    wing_case_root_loading(case, wing, rclt, rcls, W_lift, Lhtail, n_pullup; load_factor = case.load_factor, strut_share = 0.0)
+
+Returns the load factor and the wing root loading magnitude of one wing sizing load case.
+
+A `Maneuver` case uses `load_factor` and a tail load of `case.tail_load_scale * (load factor / n_pullup) * Lhtail`;
+its root loading is from [`wing_loading`](@ref). A `Gust` case is the same with the computed load factor
+(see [`wing_case_load_factor`](@ref)). A `Ground` case has no wing lift. The wing carries `(1 - strut_share)`
+times the root loading of the wing and struts together.
+
+!!! details "🔃 Inputs and Outputs"
+    **Inputs:**
+    - `case::WingLoadCase`: Wing sizing load case.
+    - `wing::TASOPT.structures.Wing`: Wing structure.
+    - `rclt::Float64`: Tip/root cl ratio (clt/clo).
+    - `rcls::Float64`: Break/root cl ratio (cls/clo).
+    - `W_lift::Float64`: Aircraft weight carried by the wing lift in the case [N].
+    - `Lhtail::Float64`: Worst-case (most negative) tail lift at the pull-up load factor [N].
+    - `n_pullup::Float64`: Pull-up load factor that `Lhtail` belongs to.
+    - `load_factor::Float64`: (keyword, default `case.load_factor`) Load factor of the case, see [`wing_case_load_factor`](@ref).
+    - `strut_share::Float64`: (keyword, default 0.0) Share of the lift carried by the struts, from 0 (cantilever wing) to below 1.
+
+    **Outputs:**
+    - `(Nload, po)`: Load factor for wing bending loads and wing root loading magnitude of the wing, reduced by `strut_share`.
+"""
+function wing_case_root_loading(case, wing, rclt, rcls, W_lift, Lhtail, n_pullup; load_factor = case.load_factor, strut_share = 0.0)
+    if case.kind == WingLoadKind.Ground
+        return (Nload = load_factor, po = 0.0)
+    end
+    # Maneuver and Gust cases
+    n = load_factor
+    Lh = case.tail_load_scale * (n / n_pullup) * Lhtail
+    return (Nload = n, po = (1.0 - strut_share) * wing_loading(wing, rclt, rcls, n, W_lift, Lh))
+end # wing_case_root_loading
+
+"""
+    wing_lift_curve_slope(AR, sweep, Mach)
+
+Returns the lift curve slope of a finite wing (Helmbold/DATCOM)
+```math
+C_{L_\\alpha} = \\frac{2\\pi AR}{2 + \\sqrt{4 + (AR\\,\\beta)^2 \\left(1 + \\tan^2\\Lambda / \\beta^2\\right)}}, \\qquad \\beta = \\sqrt{1 - M^2}
+```
+Valid for subsonic Mach numbers. The quarter-chord sweep of the layout approximates the mid-chord sweep ``\\Lambda``.
+
+!!! details "🔃 Inputs and Outputs"
+    **Inputs:**
+    - `AR::Float64`: Wing aspect ratio.
+    - `sweep::Float64`: Wing sweep angle [deg].
+    - `Mach::Float64`: Flight Mach number.
+
+    **Outputs:**
+    - `CL_alpha::Float64`: Wing lift curve slope [1/rad].
+"""
+function wing_lift_curve_slope(AR, sweep, Mach) # standard range of the formulation is up to Mach <= 0.80
+    β = sqrt(1 - Mach^2)
+    return 2π * AR / (2 + sqrt(4 + (AR * β)^2 * (1 + tand(sweep)^2 / β^2))) # Polhamus formulation
+end # wing_lift_curve_slope
+
+"""
+    gust_load_increment(W_over_S, c_mean, CL_alpha, U_de, V_EAS)
+
+Returns the incremental gust load factor from the Pratt–Walker formula
+(https://ntrs.nasa.gov/api/citations/19930090988/downloads/19930090988.pdf)
+```math
+\\mu = \\frac{2\\,(W/S)}{\\rho_0\\, \\bar{c}\\, C_{L_\\alpha}\\, g}, \\qquad K_g = \\frac{0.88\\,\\mu}{5.3 + \\mu}, \\qquad
+\\Delta n = \\frac{\\rho_0\\, U_{de}\\, V_{EAS}\\, C_{L_\\alpha}\\, K_g}{2\\,(W/S)}
+```
+where ``\\rho_0`` is the sea-level air density. The gust velocity and airspeed are equivalent airspeeds (EAS).
+
+!!! details "🔃 Inputs and Outputs"
+    **Inputs:**
+    - `W_over_S::Float64`: Wing loading [N/m²].
+    - `c_mean::Float64`: Mean geometric chord, wing area over span [m].
+    - `CL_alpha::Float64`: Wing lift curve slope [1/rad].
+    - `U_de::Float64`: Derived gust velocity [m/s EAS].
+    - `V_EAS::Float64`: Equivalent airspeed [m/s].
+
+    **Outputs:**
+    - `Δn::Float64`: Magnitude of the incremental load factor.
+"""
+function gust_load_increment(W_over_S, c_mean, CL_alpha, U_de, V_EAS)
+    ρ0 = atmos(0.0).ρ
+    μ = 2 * W_over_S / (ρ0 * c_mean * CL_alpha * gee)
+    K_g = 0.88 * μ / (5.3 + μ)
+    return ρ0 * U_de * V_EAS * CL_alpha * K_g / (2 * W_over_S)
+end # gust_load_increment
+
+"""
+    wing_sizing_masses(; W_cruise, W_MTO, W_pay, W_paymax, W_fuel, freserve, W_fuel_cap, has_wing_fuel)
+
+Returns the weights that [`evaluate_wing_sizing_cases!`](@ref) passes to [`wing_mass_state`](@ref):
+- `W_reserve = W_fuel * freserve / (1 + freserve)`: `W_fuel` includes the reserve.
+- `W_empty = W_MTO - W_pay - W_fuel`
+- `W_fuel_at_MTO = W_pay - W_paymax + W_fuel`: fuel at maximum payload, capped at `W_fuel_cap` if fuel is in the wing.
+- `r_fuel_design`: the same fuel weight over `W_fuel_cap` (zero without wing fuel), not capped at one.
+
+!!! details "🔃 Inputs and Outputs"
+    **Inputs:**
+    - `W_cruise::Float64`: Aircraft weight at the design cruise point [N].
+    - `W_MTO::Float64`: Maximum takeoff weight [N].
+    - `W_pay::Float64`: Design payload weight [N].
+    - `W_paymax::Float64`: Maximum payload weight [N].
+    - `W_fuel::Float64`: Design mission fuel weight, including the reserve [N].
+    - `freserve::Float64`: Reserve fuel as a fraction of the burned fuel.
+    - `W_fuel_cap::Float64`: Fuel weight that fills the wing tanks [N].
+    - `has_wing_fuel::Bool`: Whether fuel is stored in the wing.
+
+    **Outputs:**
+    - `masses::NamedTuple`: `W_cruise`, `W_MTO`, `W_fuel`, `W_reserve`, `W_empty`, `W_fuel_cap`, `W_fuel_at_MTO`
+      and `r_fuel_design`, as defined above [N, except `r_fuel_design`].
+"""
+function wing_sizing_masses(; W_cruise, W_MTO, W_pay, W_paymax, W_fuel, freserve, W_fuel_cap, has_wing_fuel)
+    W_fuel_design_MTO = W_pay - W_paymax + W_fuel
+    return (W_cruise = W_cruise,
+            W_MTO = W_MTO,
+            W_fuel = W_fuel,
+            W_reserve = W_fuel * freserve / (1 + freserve),
+            W_empty = W_MTO - W_pay - W_fuel,
+            W_fuel_cap = W_fuel_cap,
+            W_fuel_at_MTO = has_wing_fuel ? min(W_fuel_cap, W_fuel_design_MTO) : W_fuel_design_MTO,
+            r_fuel_design = (has_wing_fuel && W_fuel_cap > 0) ? W_fuel_design_MTO / W_fuel_cap : 0.0)
+end # wing_sizing_masses
+
+"""
+    evaluate_wing_sizing_cases!(wing, masses, has_wing_fuel, rclt, rcls, Lhtail, gammat, gammas, We, dyeinn;
+        has_strut = false, has_jury = false, neinn = 1, neout = 0, dyeout = 0.0, far_load_factor = false,
+        Mach_cruise = NaN, V_cruise_EAS = 0.0)
+
+Computes the root and break loads of every active wing sizing load case and returns their envelope, for a
+cantilever wing or, if `has_strut` is `true`, a strut-braced wing (see [`wing_case_loads`](@ref)). Results are stored in
+`wing.sizing_loads.results`, the load factor of each case in its `n_computed`, and the cases with the largest root and
+break bending moment in `governing_root` and `governing_break`.
+
+For a braced wing, the case with the largest strut tension is stored in `governing_strut` and the most compressed one
+(if any) in `governing_strut_compression`. The inboard envelope is the largest over the cases of the root and interior
+moment and of the root and break shear. With `has_jury`, the envelope also has the largest jury tension and compression.
+
+Gust cases use the load factor ``1 \\pm \\Delta n`` of [`wing_case_load_factor`](@ref). By default the wing has one engine at the
+inboard side; `neinn`, `neout` and `dyeout` set other engine locations (see [`wing_engine_arms`](@ref)). The section
+loads of `wing` are not modified.
+
+!!! details "🔃 Inputs and Outputs"
+    **Inputs:**
+    - `wing::TASOPT.structures.Wing`: Wing structure, with the panel weights of the design cruise mass state.
+    - `masses::NamedTuple`: Weights for [`wing_mass_state`](@ref): `W_cruise`, `W_MTO`, `W_fuel`, `W_reserve`,
+      `W_empty`, `W_fuel_cap`, `W_fuel_at_MTO` and `r_fuel_design`.
+    - `has_wing_fuel::Bool`: Whether fuel is stored in the wing.
+    - `rclt::Float64`: Tip/root cl ratio (clt/clo).
+    - `rcls::Float64`: Break/root cl ratio (cls/clo).
+    - `Lhtail::Float64`: Worst-case (most negative) tail lift at the pull-up load factor [N].
+    - `gammat::Float64`: Wing outer section taper ratio.
+    - `gammas::Float64`: Wing inner section taper ratio.
+    - `We::Float64`: Weight of one engine [N].
+    - `dyeinn::Float64`: Average spanwise moment arm of the inboard engine about the wing root station ηo [m].
+    - `has_strut::Bool`: (keyword, default `false`) Whether the wing is braced by a strut.
+    - `has_jury::Bool`: (keyword, default `false`) Whether the strut has a vertical jury strut (only with `has_strut`).
+    - `neinn::Int`: (keyword, default 1) Number of engines per wing mounted at or inboard of the wing break.
+    - `neout::Int`: (keyword, default 0) Number of engines per wing mounted outboard of the wing break.
+    - `dyeout::Float64`: (keyword, default 0.0) Average spanwise moment arm of the outboard engines about the wing break station ηs [m].
+    - `far_load_factor::Bool`: (keyword, default `false`) Whether the positive manoeuvre cases use the FAR/CS 25.337 load factor.
+    - `Mach_cruise::Float64`: (keyword, default `NaN`) Cruise Mach number, for the lift curve slope of the gust cases.
+    - `V_cruise_EAS::Float64`: (keyword, default 0.0) Cruise equivalent airspeed [m/s] of the gust cases that have no `gust_speed_EAS` of their own.
+
+    **Outputs:**
+    - Cantilever wing: `(S_root, M_root, S_break, M_break)`: Largest magnitude of the shear and moment
+      at the root and at the break, or `nothing` if no case was evaluated.
+    - Braced wing: `(S_root, M_root, S_break, M_break, T_strut, T_strut_compression, P_axial, jury_tension, jury_compression)`,
+      with the inboard envelope loads `S_root` and `M_root`, the largest strut tension `T_strut` [N] (0 if always compressed), the most
+      negative strut force `T_strut_compression` [N] (0 if never compressed), the largest-magnitude inboard axial
+      force `P_axial` [N] (negative in compression), the largest jury axial force `jury_tension` [N] (at least 0) and the most
+      negative one `jury_compression` [N] (at most 0), or `nothing` if no case was evaluated. The jury axial force of a case is
+      the negative of its `jury_force`.
+"""
+function evaluate_wing_sizing_cases!(wing, masses, has_wing_fuel, rclt, rcls, Lhtail, gammat, gammas, We, dyeinn;
+        has_strut = false, has_jury = false, neinn = 1, neout = 0, dyeout = 0.0, far_load_factor = false,
+        Mach_cruise = NaN, V_cruise_EAS = 0.0)
+    sl = wing.sizing_loads
+    n_pullup = wing_case_load_factor(:pullup, sl.pullup, masses.W_MTO, far_load_factor)
+    config = has_strut ? Braced() : Cantilever()
+    strut_share = has_strut ? strut_lift_share(wing) : 0.0
+    empty!(sl.results)
+    sl.governing_strut = :none
+    sl.governing_strut_compression = :none
+
+    # Limitation: every case uses the panel weights stored in the wing (design cruise mass state).
+    for name in fieldnames(WingSizingLoads)
+        case = getfield(sl, name)
+        case isa WingLoadCase || continue
+        case.active || continue
+
+        ms = wing_mass_state(case.mass_state, has_wing_fuel; masses...)
+        n_case = wing_case_load_factor(name, case, masses.W_MTO, far_load_factor;
+                                       wing, W_lift = ms.W_lift, Mach_cruise, V_cruise_EAS)
+        (Nload, po) = wing_case_root_loading(case, wing, rclt, rcls, ms.W_lift, Lhtail, n_pullup;
+                                             load_factor = n_case, strut_share)
+        case.n_computed = Nload
+        if has_strut
+            # the spanload of po is the one of wing_loading, with rclt and rcls
+            F_strut = strut_lift_on_strut(wing, po, wing.outboard.λ * rclt, wing.inboard.λ * rcls)
+            # inertia load of the fuel in one of the two struts; it opposes the strut lift for positive Nload.
+            # Zero without strut fuel: r_fuel_wing is Inf while the tank capacity is still 0 (first iteration).
+            strut_fuel_load = wing.strut.fuel_capacity > 0.0 ?
+                Nload * ms.r_fuel_wing * wing.strut.fuel_capacity / 2.0 : 0.0
+            sl.results[name] = wing_case_loads(config, deepcopy(wing), po, gammat, gammas, Nload, We, neout, dyeout, neinn, dyeinn;
+                                               strut_lift = F_strut, strut_fuel_load, has_jury)
+        else
+            sl.results[name] = wing_case_loads(config, deepcopy(wing), po, gammat, gammas, Nload, We, neout, dyeout, neinn, dyeinn)
+        end
+    end
+    isempty(sl.results) && return nothing
+
+    # first case in declaration order wins ties
+    names = [name for name in fieldnames(WingSizingLoads) if haskey(sl.results, name)]
+    sl.governing_root = names[argmax([abs(sl.results[name].M_root) for name in names])]
+    sl.governing_break = names[argmax([abs(sl.results[name].M_break) for name in names])]
+
+    root, brk = sl.results[sl.governing_root], sl.results[sl.governing_break]
+    if has_strut
+        strut_forces = [sl.results[name].strut_force for name in names]
+        sl.governing_strut = names[argmax(strut_forces)]
+        strut_compression, i_compression = findmin(strut_forces)
+        strut_compression < 0 && (sl.governing_strut_compression = names[i_compression])
+        cases = [sl.results[name] for name in names]
+        jury_axial_forces = [-c.jury_force for c in cases]
+        return (S_root = maximum(max(abs(c.S_root), abs(c.S_break)) for c in cases),
+                M_root = maximum(max(abs(c.M_root), abs(c.M_inboard_extreme)) for c in cases),
+                S_break = abs(brk.S_break), M_break = abs(brk.M_break),
+                T_strut = max(0.0, maximum(strut_forces)),
+                T_strut_compression = min(0.0, strut_compression),
+                P_axial = cases[argmax([abs(c.P_axial_inboard) for c in cases])].P_axial_inboard,
+                jury_tension = max(0.0, maximum(jury_axial_forces)),
+                jury_compression = min(0.0, minimum(jury_axial_forces)))
+    end
+    return (S_root = abs(root.S_root), M_root = abs(root.M_root),
+            S_break = abs(brk.S_break), M_break = abs(brk.M_break))
+end # evaluate_wing_sizing_cases!
+
+"""
+    wing_mass_state(mass_state, has_wing_fuel; W_cruise, W_MTO, W_fuel, W_reserve, W_empty,
+        W_fuel_cap, W_fuel_at_MTO, r_fuel_design)
+
+Returns the lift weight and the fuel split of a wing mass state: the weight the wing lifts, the fuel
+carried in the wing as a fraction of the wing tank capacity, and the fuel carried in the fuselage.
+
+!!! details "🔃 Inputs and Outputs"
+    **Inputs:**
+    - `mass_state::WingMassState.T`: Mass state (`DesignCruise`, `MTOW_MaxFuel`, `MZFW` or `Light`).
+    - `has_wing_fuel::Bool`: Whether fuel is stored in the wing. If `false`, the wing fuel fraction is zero
+      and `W_fuel_cap` is not used; if `true`, all fuel is in the wing and the fuselage fuel weight is zero.
+    - `W_cruise::Float64`: Aircraft weight at the design cruise point [N].
+    - `W_MTO::Float64`: Maximum takeoff weight [N].
+    - `W_fuel::Float64`: Design mission fuel weight [N].
+    - `W_reserve::Float64`: Reserve fuel weight [N].
+    - `W_empty::Float64`: Operating empty weight, without fuel [N].
+    - `W_fuel_cap::Float64`: Fuel weight that fills the wing tanks [N].
+    - `W_fuel_at_MTO::Float64`: Fuel weight on board at maximum takeoff weight with the maximum payload [N].
+    - `r_fuel_design::Float64`: Wing fuel fraction (fuel weight over `W_fuel_cap`) at the design cruise point.
+
+    **Outputs:**
+    - `W_lift::Float64`: Weight carried by the wing lift [N].
+    - `r_fuel_wing::Float64`: Fuel weight in the wing as a fraction of `W_fuel_cap`; at most one at `MTOW_MaxFuel`.
+    - `W_fuel_fuse::Float64`: Fuel weight in the fuselage [N].
+"""
+function wing_mass_state(mass_state, has_wing_fuel;
+        W_cruise, W_MTO, W_fuel, W_reserve, W_empty, W_fuel_cap, W_fuel_at_MTO, r_fuel_design)
+
+    if mass_state == WingMassState.DesignCruise
+        W_lift, W_fuel_state = W_cruise, W_fuel
+        r_fuel_wing = has_wing_fuel ? r_fuel_design : 0.0
+    elseif mass_state == WingMassState.MTOW_MaxFuel
+        W_lift, W_fuel_state = W_MTO, W_fuel_at_MTO
+        r_fuel_wing = has_wing_fuel ? min(1.0, W_fuel_at_MTO / W_fuel_cap) : 0.0
+    elseif mass_state == WingMassState.MZFW
+        W_lift, W_fuel_state = W_MTO - W_fuel + W_reserve, W_reserve
+        r_fuel_wing = has_wing_fuel ? W_reserve / W_fuel_cap : 0.0
+    else # WingMassState.Light
+        W_lift, W_fuel_state = W_empty + W_reserve, W_reserve
+        r_fuel_wing = has_wing_fuel ? W_reserve / W_fuel_cap : 0.0
+    end
+
+    W_fuel_fuse = has_wing_fuel ? 0.0 : W_fuel_state
+    return (W_lift = W_lift, r_fuel_wing = r_fuel_wing, W_fuel_fuse = W_fuel_fuse)
+end # wing_mass_state
+
+"""
     wing_weights!(wing, po, gammat, gammas, 
-       Nload, We, neout, dyeout, neinn, dyeinn, sigfac, rhofuel; n_wings=2.0)
+       Nload, We, neout, dyeout, neinn, dyeinn, sigfac, rhofuel; n_wings=2.0, has_strut=false, has_jury=false,
+       design_wing_fuel=nothing, has_wing_fuel=false, has_centerbox_fuel=false, has_strut_fuel=false, section_loads_envelope=nothing)
 
 Calculates Wing or Tail loads, stresses, weights of individual wing sections.
 Also returns the material gauges, torsional and bending stiffness. Formerly, `get_wing_weights!()`.
@@ -86,19 +1195,32 @@ Also returns the material gauges, torsional and bending stiffness. Formerly, `ge
     - `Nload::Int`: Max vertical load factor for wing bending loads.
     - `We::Float64`: Weight of one engine [N].
     - `neout::Int`:  Number of engines per wing mounted outboard of the wing break (strut attachment point).
-    - `dyeout::Float64`: Average spanwise moment arm of the outboard engines about the wing break station ηs, i.e. ``y_e - y_s`` [m].
+    - `dyeout::Float64`: Average spanwise moment arm of the outboard engines about the wing break station ηs [m].
     - `neinn::Int`: Number of engines per wing mounted at or inboard of the wing break (strut attachment point).
-    - `dyeinn::Float64`: Average spanwise moment arm of the inboard engines about the wing root station ηo, i.e. ``y_e - y_o`` [m]. For an engine at the break, ``(b/2)(η_s - η_o)``.
+    - `dyeinn::Float64`: Average spanwise moment arm of the inboard engines about the wing root station ηo [m].
     - `sigfac::Float64`: Stress Factor.
     - `rhofuel::Float64`: Density of the fuel.
     - `n_wings::Int64`: Number of total wings (1 for Vtail).
+    - `has_strut::Bool`: Whether the wing is braced by a strut (`false` for a cantilever wing).
+    - `has_jury::Bool`: Whether the strut has a vertical jury strut (only with `has_strut`); see `size_jury!`.
+    - `design_wing_fuel::Union{Nothing,Float64}`: Fuel weight at the design point [N]. If given, the panel weights and moments
+        (`wing.inboard.weight`, `wing.outboard.weight`, `dyW`) are updated with structure plus wing fuel scaled by `design_wing_fuel / Wfmax`.
+    - `has_wing_fuel::Bool`: Whether fuel is stored in the wing. Only used with `design_wing_fuel`.
+    - `has_centerbox_fuel::Bool`: Whether fuel is stored in the wing center box. Only used with `design_wing_fuel`.
+    - `has_strut_fuel::Bool`: Whether fuel is also stored in the strut box (only with `has_strut`); sets `wing.strut.fuel_capacity`,
+        which is added to the wing tank capacity so that the wing and strut tanks have one fill fraction.
+    - `section_loads_envelope::Union{Nothing,NamedTuple}`: Envelope of the section loads `(S_root, M_root, S_break, M_break)` over the
+        wing sizing cases. If given, it replaces the computed inboard and outboard shear and moment before sizing. Required for a
+        braced wing (`has_strut = true`), where it also gives the strut tension `T_strut` and the inboard axial load `P_axial`.
+        With a jury strut, its `jury_tension` and `jury_compression` size the jury (see `size_jury!`).
 
 See [Geometry](@ref geometry),  [Wing/Tail Structures](@ref wingtail), and Section 2.7  of the [TASOPT Technical Description](@ref dreladocs). 
 """
 function wing_weights!(wing, po, gammat, gammas,
-       Nload, We, neout, dyeout, neinn, dyeinn, sigfac, rhofuel; n_wings=2.0)
+       Nload, We, neout, dyeout, neinn, dyeinn, sigfac, rhofuel; n_wings=2.0, has_strut=false, has_jury=false,
+       design_wing_fuel=nothing, has_wing_fuel=false, has_centerbox_fuel=false, has_strut_fuel=false, section_loads_envelope=nothing)
 
-    tauweb,sigstrut = wing.inboard.webs.material.τmax * sigfac, wing.strut.material.σmax * sigfac
+    tauweb = wing.inboard.webs.material.τmax * sigfac
 
     cosL = cosd(wing.layout.sweep)
     sinL = sind(wing.layout.sweep)
@@ -107,76 +1229,138 @@ function wing_weights!(wing, po, gammat, gammas,
     etao = wing.layout.ηo
     etas = wing.layout.ηs
 
-    # Tip roll off Lift (modeled as a point load) and it's moment about ηs
-    dLt = wing.tip_lift_loss * po * wing.layout.root_chord * gammat * wing.outboard.λ
-    dMt = dLt * 0.5 * wing.layout.span * (1.0 - etas)
-
     h_avgo, h_rmso = get_average_sparbox_heights(wing.inboard.cross_section)
     h_avgs, h_rmss = get_average_sparbox_heights(wing.outboard.cross_section)
 
-    # Outboard section:
-    #---- strut-attach shear,moment from outer-wing loading. 
-    #     Note added term to account for any outboard engines.
-    #     If neout = 0 this simplifies to Drela's version which assumes engine
-    #     fixed at ηs locations only.
-    wing.outboard.max_shear_load = (po * wing.layout.span / 4.0) * (gammas + gammat) * (1.0 - etas) +
-                                   dLt - Nload * wing.outboard.weight - Nload * neout * We
-    wing.outboard.moment = (po * wing.layout.span^2 / 24.0) * (gammas + 2.0 * gammat) * (1.0 - etas)^2 +
-                           dMt - Nload * wing.outboard.dyW - Nload * neout * We * dyeout
+    outboard_section_loads!(wing, po, gammat, gammas, Nload, We, neout, dyeout)
+    if !isnothing(section_loads_envelope)
+        wing.outboard.max_shear_load = section_loads_envelope.S_break
+        wing.outboard.moment = section_loads_envelope.M_break
+    end
 
     #---- size strut-attach station at etas
     cs = wing.layout.root_chord*wing.inboard.λ
 
     outboard_dims = size_wing_section!(wing.outboard, wing.sweep, sigfac)
+    strut_fuel_capacity = 0.0
     # Inboard Section:
-    if(!wing.has_strut) 
+    if !has_strut
         #----- no strut, with or without engine at etas
         ls = 0.
-        Tstrut = 0.
-        Rstrut = 0.
-        Pstrut = 0.
 
-        # Modifed to account for bending relief from multiple engines.
-        # dyeinn allows engine to be in locations other than ηs
-        So = wing.outboard.max_shear_load - Nload*neinn*We +
-            0.25*po*wing.layout.span*(1.0+gammas)*(etas-etao) -
-            Nload*wing.inboard.weight
-        Mo = wing.outboard.moment + wing.outboard.max_shear_load*0.5*wing.layout.span*(etas-etao) +
-            (1.0/24.0)*po*wing.layout.span^2*(1.0+2.0*gammas)*(etas-etao)^2 -
-            Nload*wing.inboard.dyW - Nload*neinn*We*dyeinn
-
-        #----- limit So,Mo to Ss,Ms, which might be needed with heavy outboard engine
-        #-      (rules out negatively-tapered structure, deemed not feasible for downloads)
-        wing.inboard.max_shear_load = max(So ,wing.outboard.max_shear_load)
-        wing.inboard.moment = max(Mo ,wing.outboard.moment)
+        wing_section_loads(Cantilever(), wing, po, gammas, Nload, We, neinn, dyeinn)
+        if !isnothing(section_loads_envelope)
+            wing.inboard.max_shear_load = section_loads_envelope.S_root
+            wing.inboard.moment = section_loads_envelope.M_root
+        end
 
         inboard_dims = size_wing_section!(wing.inboard, wing.sweep, sigfac)
 
         lsp = 0.
         Tstrutp = 0.
-        wing.strut.cos_lambda = 1.0
+        if wing isa Wing # Tail has no strut
+            wing.strut.cos_lambda = 1.0
+            wing.strut.dihedral = 0.0
+            wing.strut.axial_force_compression = 0.0
+            wing.strut.force_vertical = 0.0
+            wing.strut.force_horizontal = 0.0
+            wing.strut.reaction_share = 0.0
+        end
 
     else
         #----- strut present
         ls = sqrt(wing.strut.z^2 + (0.5*wing.layout.span*(etas-etao))^2)
-        Rstrut = (po*wing.layout.span/12.0)*(etas-etao)*(1.0+2.0*gammas) + wing.outboard.max_shear_load
-        Tstrut = Rstrut*ls/wing.strut.z
-        #c     Pstrut = Rstrut*0.5*wing.layout.span*(etas-etao)/zs
+        #----- strut tension and inboard loads from the sizing load cases
+        Tstrut = section_loads_envelope.T_strut
+        Tstrut_compression = get(section_loads_envelope, :T_strut_compression, 0.0)
+        wing.inboard.max_shear_load = section_loads_envelope.S_root
+        wing.inboard.moment = section_loads_envelope.M_root
 
-        #----- inboard shear,moment used for sparbox sizing
-        wing.inboard.max_shear_load = wing.outboard.max_shear_load
-        wing.inboard.moment = wing.outboard.moment
-        #
         #----- size inboard station at etao
-        inboard_dims = size_wing_section!(wing.inboard, wing.sweep, sigfac)
+        inboard_dims = size_wing_section!(wing.inboard, wing.sweep, sigfac;
+                                          P_axial = section_loads_envelope.P_axial)
 
         #----- total strut length, tension
-        lsp = sqrt(wing.strut.z^2 + (0.5*wing.layout.span*(etas-etao)/cosL)^2)
+        dx = strut_attach_offset(wing)
+        ΔY = 0.5*wing.layout.span*(etas-etao)
+        ΔX = ΔY*sinL/cosL - dx # streamwise run of the strut, positive aft
+        lsp = sqrt(wing.strut.z^2 + ΔY^2 + ΔX^2)
         Tstrutp = Tstrut*lsp/ls
         wing.strut.cos_lambda = ls/lsp
-        wing.strut.axial_force = Tstrutp/sigstrut
-        wing.strut.weight   = 2.0*wing.strut.material.ρ*gee*wing.strut.axial_force*lsp
-        wing.strut.dxW = wing.strut.weight * 0.25*wing.layout.span*(etas-etao) * sinL/cosL
+        wing.strut.dihedral = atan(wing.strut.z/(0.5*wing.layout.span*(etas-etao))) # in-plane strut angle
+        wing.strut.axial_force = Tstrutp
+        # compression scaled by lsp/ls like the tension (along the 3-D strut length)
+        wing.strut.axial_force_compression = Tstrut_compression*lsp/ls
+        wing.strut.length = lsp
+
+        # Strut force on the fuselage (largest in-plane force) and strut share of the vertical wing support
+        L_bay = 0.5*wing.layout.span*(etas-etao)
+        T_plane = max(Tstrut, abs(Tstrut_compression))
+        wing.strut.force_vertical = n_wings*T_plane*wing.strut.z/ls
+        wing.strut.force_horizontal = T_plane*L_bay/ls
+        results = wing.sizing_loads.results
+        wing.strut.reaction_share = 0.0
+        if !isempty(results)
+            worst = results[argmax(name -> abs(results[name].strut_force), collect(keys(results)))]
+            support = worst.S_root + worst.strut_reaction
+            iszero(support) || (wing.strut.reaction_share = clamp(worst.strut_reaction/support, 0.0, 1.0))
+        end
+        # Strut box chord is `chord_to_wing_chord` times the wing chord at the attachment (the smaller end chord if tapered)
+        strut = wing.strut
+        strut.chord = strut.chord_to_wing_chord * cs
+        strut.root_chord = strut.chord / strut.taper_ratio
+        buckling_length = strut_buckling_length(lsp, has_jury ? wing.jury.eta_strut : nothing)
+
+        # largest load factor of the active sizing cases
+        sl = wing.sizing_loads
+        n_max = maximum(abs(getfield(sl, name).n_computed) for name in fieldnames(WingSizingLoads)
+                        if getfield(sl, name) isa WingLoadCase && getfield(sl, name).active; init = 0.0)
+        W_strut_one_wing = strut.weight / n_wings
+        # strut lift F is normal to the strut (vertical part F, horizontal F tanΓ); weight W is vertical, positive down. Returns the intensity for uniform F and W
+        perpendicular_load(F, W) = sqrt(F^2 / cos(strut.dihedral)^2 - 2 * F * W + W^2 * (1 - strut.z^2 / lsp^2)) / lsp
+        # the strut lift is shaped along the strut; weight and fuel stay uniform
+        eta_strut = has_jury ? wing.jury.eta_strut : nothing
+        bay = isnothing(eta_strut) ? (0.0, 1.0) : eta_strut >= 0.5 ? (0.0, eta_strut) : (eta_strut, 1.0)
+        κ_M, κ_V = strut_bay_load_factors(strut.spanload_exponent, bay...)
+        if any(r.strut_lift != 0 for r in values(results))
+            sl = wing.sizing_loads
+            transverse_load(κ) = maximum(
+                perpendicular_load(κ * r.strut_lift, getfield(sl, name).n_computed * W_strut_one_wing + r.strut_fuel_load)
+                for (name, r) in results)
+            q_perp_V = transverse_load(κ_V)
+            q_perp_M = transverse_load(κ_M)
+        else
+            q_perp_V = q_perp_M = perpendicular_load(0.0, n_max * W_strut_one_wing)
+        end
+        V_transverse = q_perp_V * buckling_length / 2
+        strut.bending_moment = q_perp_M * buckling_length^2 / 8
+        strut.shear_load = V_transverse
+
+        # box is sized on the chord perpendicular to the strut axis, as the wing box is (c cosΛ)
+        box = size_member_box(strut.caps, strut.webs;
+            chord = strut.chord * strut.cos_lambda, height_to_chord = strut.thickness_to_chord, width_to_chord = strut.box_width_to_chord,
+            web_to_box_height = strut.web_to_box_height, tension = Tstrutp, compression = strut.axial_force_compression,
+            buckling_length = buckling_length, K = strut.end_fixity_K,
+            shear_load = strut.shear_load, bending_moment = strut.bending_moment, sigfac = sigfac,
+            min_cap_thickness = strut.min_cap_thickness, min_web_thickness = strut.min_web_thickness)
+        strut.area = box.area
+        strut.EI_min = box.EI_min
+        strut.buckling_load = box.buckling_load
+        strut.sizing_criterion = box.criterion
+        # bare member weight at the mean chord, times the added weight fraction; the area stays bare
+        mean_to_wing_end_chord = (1.0 + 1.0/strut.taper_ratio) / 2
+        strut.weight = n_wings*gee*lsp*(strut.caps.material.ρ*box.area_caps + strut.webs.material.ρ*box.area_webs) *
+                       mean_to_wing_end_chord * (1.0 + strut.weight_frac_added)
+        wing.strut.dxW = wing.strut.weight * 0.5*(dx + ΔY*sinL/cosL)
+        if has_strut_fuel
+            # The whole internal volume of the strut box is tank; `weight_frac_added` already covers what the main wing covers
+            # with `fwadd`, so there is no extra tank fraction. Perpendicular chord^2 is averaged over the linear taper of the strut.
+            Abfuelstrut = calc_sparbox_internal_area(strut.box_width_to_chord, strut.thickness_to_chord, box.tbcap, box.tbweb)
+            mean_chord_squared = (strut.chord^2 + strut.chord*strut.root_chord + strut.root_chord^2) / 3 * strut.cos_lambda^2
+            strut_fuel_capacity = n_wings*rhofuel*gee*Abfuelstrut*mean_chord_squared*lsp
+        end
+        strut.fuel_capacity = strut_fuel_capacity
+        has_jury && size_jury!(wing, etao, etas, sigfac, sinL, cosL; n_wings = n_wings, section_loads_envelope = section_loads_envelope)
     end
 
     Abfuels = calc_sparbox_internal_area(wing.inboard.cross_section.width_to_chord,
@@ -258,6 +1442,16 @@ function wing_weights!(wing, po, gammat, gammas,
     Wwing = n_wings * (Wscen + Wsinn + Wsout) * (1.0 + fwadd)
     wing.dxW = n_wings * (dxWsinn + dxWsout) * (1.0 + fwadd)
 
+    if !isnothing(design_wing_fuel)
+        Wfmax = has_wing_fuel ? 2.0 * ((has_centerbox_fuel ? Wfcen : 0.0) + Wfinn + Wfout) + strut_fuel_capacity : 0.0
+        rfmax = has_wing_fuel ? design_wing_fuel / Wfmax : 0.0
+
+        wing.inboard.weight = Wsinn * (1.0 + fwadd) + rfmax * Wfinn
+        wing.outboard.weight = Wsout * (1.0 + fwadd) + rfmax * Wfout
+        wing.inboard.dyW = dyWsinn * (1.0 + fwadd) + rfmax * dyWfinn
+        wing.outboard.dyW = dyWsout * (1.0 + fwadd) + rfmax * dyWfout
+    end
+
     return Wwing, Wsinn, Wsout, dyWsinn, dyWsout, Wfcen, Wfinn, Wfout,
     dxWfinn, dxWfout, dyWfinn, dyWfout, lsp
 
@@ -265,7 +1459,7 @@ end # wing_weights
 
 
 """
-    size_cap(σmax, moment, h̄, w̄, h_rms, c, cosΛ)
+    size_cap(σmax, moment, h̄, w̄, h_rms, c, cosΛ; t_min = 0.0)
 
 Calculates area and thickness of wing caps based on maximum stress and geometric parameters.
 
@@ -278,19 +1472,20 @@ Calculates area and thickness of wing caps based on maximum stress and geometric
     - `h_rms::Float64`: RMS height of sparbox
     - `c::Float64`: Chord length
     - `cosΛ::Float64`: Cosine of sweep angle
+    - `t_min::Float64`: (keyword, default 0.0) Minimum cap thickness; `t_cap = max(required, t_min)`
     
     **Outputs:**
     - `t_cap::Float64`: Thickness of cap
     - `Ab_cap::Float64`: Cross-sectional area of cap
 """
-function size_cap(σmax, moment, h̄, w̄, h_rms, c, cosΛ)
-    t_cap = calc_cap_thickness(σmax, moment, h̄, w̄, h_rms, c, cosΛ)
+function size_cap(σmax, moment, h̄, w̄, h_rms, c, cosΛ; t_min = 0.0)
+    t_cap = max(calc_cap_thickness(σmax, moment, h̄, w̄, h_rms, c, cosΛ), t_min)
     Ab_cap = 2 * t_cap * w̄
     return t_cap, Ab_cap
 end  # function size_cap
 
 """
-    size_web(τmax, shear, c_perp, web_height)
+    size_web(τmax, shear, c_perp, web_height; t_min = 0.0)
 
 Calculates area and thickness of wing webs based on maximum shear stress and geometric parameters.
 
@@ -300,13 +1495,14 @@ Calculates area and thickness of wing webs based on maximum shear stress and geo
     - `shear::Float64`: Shear load
     - `c_perp::Float64`: Perpendicular chord length
     - `web_height::Float64`: Height of web
+    - `t_min::Float64`: (keyword, default 0.0) Minimum web thickness; `t_web = max(required, t_min)`
     
     **Outputs:**
     - `t_web::Float64`: Thickness of web
     - `Ab_web::Float64`: Cross-sectional area of web
 """
-function size_web(τmax, shear, c_perp, web_height)
-    t_web = calc_web_thickness(τmax, shear, c_perp, web_height)
+function size_web(τmax, shear, c_perp, web_height; t_min = 0.0)
+    t_web = max(calc_web_thickness(τmax, shear, c_perp, web_height), t_min)
     Ab_web = 2 * t_web * web_height
     return t_web, Ab_web
 end  # function size_web
@@ -348,9 +1544,15 @@ Calculates the required cap thickness based on maximum stress and geometric para
     
     **Outputs:**
     - `t_cap::Float64`: Required thickness of cap
+
+Throws an `ErrorException` if the cap sizing is infeasible (`con >= h_rms^3`).
 """
 function calc_cap_thickness(σmax, moment, h̄, w̄, h_rms, c, cosΛ)
     con = moment * 6h̄ / w̄ * 1 / (c^3 * σmax * cosΛ^4)
+    if con >= h_rms^3
+        error("Wing cap sizing infeasible: bending load parameter con = $con >= h_rms^3 = $(h_rms^3). " *
+              "The cap cannot carry the moment within the sparbox height.")
+    end
     t_cap = 0.5 * (h_rms - ∛(h_rms^3 - con))
     return t_cap
 end  # function calc_cap_thickness

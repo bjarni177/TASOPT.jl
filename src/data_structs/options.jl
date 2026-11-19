@@ -15,6 +15,8 @@ $TYPEDFIELDS
     has_centerbox_fuel::Bool
     """Indicates presence of wing fuel tanks """
     has_wing_fuel::Bool
+    """Indicates presence of fuel tanks inside the strut box, can only be true if has_wing_fuel is true and the wing is braced"""
+    has_strut_fuel::Bool = false
     """Indicates presence of fuselage fuel tanks (non-driving; set by `fuse_tank` inputs)"""
     has_fuselage_fuel::Bool 
       #TODO: consider making ^ a driving parameter, rather than a reflection of fuse_tank parameters
@@ -36,11 +38,23 @@ $TYPEDFIELDS
     #wing/stability options
     """Wing position strategy for longitudinal stability analysis: `Fixed` = static wing position, `FixedCLh` = move wing to achieve `CLh = CLhspec` in cruise, `MinStaticMargin` = move wing to achieve minimum static margin = `SMmin`"""
     opt_move_wing::WingMove.T
+    """Wing bracing: `Cantilever`, `StrutBraced` or `TrussBraced`"""
+    opt_wing_config::WingConfig.T = WingConfig.Cantilever
+    """If `true`, `pullup` and `pullup_light` sizing cases use the FAR/CS 25.337 load factor instead of their `load_factor` input"""
+    opt_far_load_factor::Bool = false
 
     #Trefftz plane options
     """Trefftz plane induced drag analysis configuration (discretization, k_tip, bunch, root_contraction)"""
     trefftz_config::aerodynamics.TrefftzPlaneConfig
 end
+
+# `has_strut` and `has_jury` are read-only, derived from `opt_wing_config`
+function Base.getproperty(opt::Options, name::Symbol)
+  name === :has_strut && return getfield(opt, :opt_wing_config) != WingConfig.Cantilever
+  name === :has_jury && return getfield(opt, :opt_wing_config) == WingConfig.TrussBraced
+  return getfield(opt, name)
+end
+Base.propertynames(opt::Options, private::Bool=false) = (fieldnames(Options)..., :has_strut, :has_jury)
 
 function Base.summary(opt::Options)
   println("\n-------- Options Summary --------")
@@ -49,10 +63,12 @@ function Base.summary(opt::Options)
   println("Propulsion Architecture: ", string(opt.opt_prop_sys_arch))
   println("Engine Location: ", string(opt.opt_engine_location))
   println("Cabin decks: ", opt.is_doubledecker ? "double" : "single")
+  println("Wing Configuration: ", string(opt.opt_wing_config))
+  println("FAR Load Factor: ", opt.opt_far_load_factor)
   println("---------------------------------")
 end
 function Base.show(io::IO, opt::Options)
   print(io, "Options(Fuel: $(string(opt.opt_fuel)); Fuel Storage: " * (opt.has_wing_fuel ? "wing " *
       (opt.has_centerbox_fuel ? "wingbox " : "(none in wingbox) ") : "") * (opt.has_fuselage_fuel ? "fuselage " : "") * 
-      "; Propulsion Arch.: $(string(opt.opt_prop_sys_arch)); Engine Location: $(string(opt.opt_engine_location)); Cabin decks: $(opt.is_doubledecker ? "double" : "single"))")
+      "; Propulsion Arch.: $(string(opt.opt_prop_sys_arch)); Engine Location: $(string(opt.opt_engine_location)); Cabin decks: $(opt.is_doubledecker ? "double" : "single"); Wing Configuration: $(string(opt.opt_wing_config)); FAR Load Factor: $(opt.opt_far_load_factor))")
 end

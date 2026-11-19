@@ -53,6 +53,14 @@ $TYPEDFIELDS
     added_payload::structures.Weight = structures.Weight()
     HPE_sys::structures.Weight = structures.Weight()
     fixed::structures.Weight = structures.Weight()
+    """Fuselage reinforcement at the strut attachment [N, m]: `wing.strut.weight_frac_attachments * wing.strut.weight` at the wing-box x. Set by [`fusew!`](@ref)"""
+    strut_attach::structures.Weight = structures.Weight()
+    """Criterion setting `strut_attach`: `:strut_weight` or `:none`"""
+    strut_attach_criterion::Symbol = :none
+    """Side walls and belly tie carrying the strut force into the fuselage [N, m], at `wing.strut.x_strut_attach` (wing-box x if NaN). Set by [`fusew!`](@ref)"""
+    strut_patch::structures.Weight = structures.Weight()
+    """Criterion setting the `strut_patch` wall thickness: `:wall_yield`, `:wall_buckling` or `:none`"""
+    strut_patch_criterion::Symbol = :none
 
     # Misc properties
     """Number of decks in fuselage"""
