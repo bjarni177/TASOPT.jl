@@ -66,6 +66,7 @@
     fuel_type       = "Jet-A" # Choices are "Jet-A", "LH2", "CH4"
     fuel_in_wing    = true # Is fuel stored in wings?
     fuel_in_wingcen = true # Is fuel stored in wing center box?
+    fuel_in_strut = false # Is fuel stored in the strut box? Needs fuel in wing and a braced wing
     fuel_usability_factor = 0.90 # fraction of max fuel volume that is usable
 
     fuel_temp = 280.0
@@ -247,7 +248,6 @@
 [Wing.Strut]
     #Only used if `wing_config` is not "cantilever"
     z_fuselage_attach       = "154 in" # strut z position at the fuselage attachment
-    y_fuselage_attach       = "0.0 m" # strut y position at the fuselage attachment
     thickness_to_chord      = 0.15 # strut thickness to chord
     local_velocity_ratio    = 1.0 # V_strut/V_freestream
     box_width_to_chord      = 0.5 # strut box width to chord ratio
@@ -256,7 +256,6 @@
     chord_to_wing_chord     = 0.5 # PLACEHOLDER: strut chord as a fraction of the wing chord at the strut attachment, chosen so that at the default strut-braced geometry the strut + jury share of the wing group weight is near the SUGAR Phase IV value of about 30 %
     min_cap_thickness       = "1.5 mm" # PLACEHOLDER: minimum strut cap thickness (same as the braced wing minimum cap gauge)
     min_web_thickness       = "1.0 mm" # PLACEHOLDER: minimum strut web thickness (same as the braced wing minimum web gauge)
-    opt_strut_force         = "compatibility" # strut force model: "compatibility" (from the wing and strut deflections) or "prescribed" (fixed rule)
     weight_frac_added       = 0.60 # added weight fraction for fairings and fittings
     lift_fraction_strut_to_total = 0.25 # share of the wing + strut lift carried by both struts, L_strut/(L_wing+L_strut); 0 = strut carries no lift
 
@@ -300,7 +299,7 @@
         tail_load_scale = 1.0
 
     [Wing.SizingLoads.taxi]
-        load_factor     = -2.0
+        load_factor     = 2.0
         mass_state      = "MTOW_MaxFuel"
         tail_load_scale = 1.0
 

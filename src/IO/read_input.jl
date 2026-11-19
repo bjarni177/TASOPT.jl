@@ -665,13 +665,6 @@ readwing(x) = read_input(x, wing_i, dwing)
                                                     get(dstrut, "min_cap_thickness", wing.strut.min_cap_thickness)))
         wing.strut.min_web_thickness = Distance(get(strut_i, "min_web_thickness",
                                                     get(dstrut, "min_web_thickness", wing.strut.min_web_thickness)))
-        strut_force_str = (haskey(strut_i, "opt_strut_force") || haskey(dstrut, "opt_strut_force")) ?
-            readstrut("opt_strut_force") : string(wing.strut.opt_strut_force)
-        strut_force_models = instances(StrutForceModel.T)
-        i_model = findfirst(model -> compare_strings(strut_force_str, string(model)), strut_force_models)
-        isnothing(i_model) && error("Unrecognized strut force model: $strut_force_str. " *
-                                    "Valid names: " * join(string.(strut_force_models), ", "))
-        wing.strut.opt_strut_force = strut_force_models[i_model]
         wing.strut.weight_frac_attachments = get(strut_i, "weight_frac_attachments",
                                                  get(dstrut, "weight_frac_attachments", wing.strut.weight_frac_attachments))
     end
@@ -680,6 +673,8 @@ readwing(x) = read_input(x, wing_i, dwing)
     if _opt_wing_config == WingConfig.TrussBraced
         jury_i = get(wing_i, "Jury", Dict{String, Any}())
         wing.jury.eta_strut = get(jury_i, "eta_strut", wing.jury.eta_strut)
+        0.0 < wing.jury.eta_strut < 1.0 ||
+            error("Input error: jury \"eta_strut\" = $(wing.jury.eta_strut) must be above 0 and below 1.")
         wing.jury.weight_frac_added = get(jury_i, "weight_frac_added", wing.jury.weight_frac_added)
         wing.jury.chord_to_strut_chord = get(jury_i, "chord_to_strut_chord", wing.jury.chord_to_strut_chord)
         wing.jury.thickness_to_chord = get(jury_i, "thickness_to_chord", wing.jury.thickness_to_chord)
@@ -725,6 +720,14 @@ readwing(x) = read_input(x, wing_i, dwing)
         isnothing(i_state) && error("Unrecognized wing mass state for $case_name: $mass_state_str. " *
                                     "Valid names: " * join(string.(mass_states), ", "))
         case.mass_state = mass_states[i_state]
+    end
+
+    # A braced wing is sized by the envelope of its active load cases
+    if _opt_wing_config != WingConfig.Cantilever
+        any(f -> (c = getfield(wing.sizing_loads, f); c isa typeof(wing.sizing_loads.pullup) && c.active),
+            fieldnames(typeof(wing.sizing_loads))) ||
+            error("Input error: a braced wing is sized by the envelope of its active sizing load cases; " *
+                  "set \"active\" = true in at least one [Wing.SizingLoads.<case>] table.")
     end
 
     airfoil_data = joinpath(__TASOPTroot__,"airfoil_data/", readwing("airfoil"))

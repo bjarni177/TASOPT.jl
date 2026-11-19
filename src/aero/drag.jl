@@ -216,7 +216,7 @@ function aircraft_drag!(ac, imission::Int, ip::Int, computes_wing_direct::Bool; 
                                            Reunit, rVstrut, aRexp, fexcdw, wing.airsection)
             CDstrut = main_strut.CD
             strut_exceeded = !isempty(main_strut.exceeded)
-            if ac.options.opt_wing_config == WingConfig.TrussBraced
+            if ac.options.has_jury
                   # Jury struts (one per side) are vertical, unswept and carry no lift
                   jury = wing.jury
                   jury_strut = strut_member_drag(2*jury.chord*jury.length/wing.layout.S, jury.chord, 0.0,

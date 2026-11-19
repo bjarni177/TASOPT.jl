@@ -239,14 +239,13 @@ function save_aircraft_model(ac::TASOPT.aircraft=TASOPT.read_aircraft_model(),
                 d_wing_strut["spanload_exponent"] = wing.strut.spanload_exponent
                 d_wing_strut["min_cap_thickness"] = wing.strut.min_cap_thickness
                 d_wing_strut["min_web_thickness"] = wing.strut.min_web_thickness
-                d_wing_strut["opt_strut_force"] = string(wing.strut.opt_strut_force)
                 d_wing_strut["weight_frac_added"] = wing.strut.weight_frac_added
                 d_wing_strut["weight_frac_attachments"] = wing.strut.weight_frac_attachments
             d_wing["Strut"] = d_wing_strut
         end
 
     # Jury strut details (only used if the wing is truss braced)
-        if options.opt_wing_config == WingConfig.TrussBraced
+        if options.has_jury
             d_wing["Jury"] = Dict("eta_strut" => wing.jury.eta_strut,
                                   "weight_frac_added" => wing.jury.weight_frac_added,
                                   "chord_to_strut_chord" => wing.jury.chord_to_strut_chord,

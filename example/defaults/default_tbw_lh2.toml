@@ -70,6 +70,7 @@
     fuel_type       = "LH2" # Choices are "Jet-A", "LH2", "CH4", "C2H6", "C2H4", "C2H5OH"
     fuel_in_wing    = false # CRYO: no fuel in the wing, the fuel is in the fuselage tank
     fuel_in_wingcen = false # CRYO: no fuel in the wing center box
+    fuel_in_strut = false # Is fuel stored in the strut box? Needs fuel in wing and a braced wing
     fuel_usability_factor = 0.90 # fraction of max fuel volume that is usable
 
     fuel_enthalpy_vaporization = 0.0 #J/kg, latent heat of vaporization of fuel
@@ -277,25 +278,26 @@
 [Wing.Strut]
     #Only used if `wing_config` is not "cantilever"
     z_fuselage_attach       = "120 in" # TBW: vertical distance from the wing box to the strut fuselage attachment, on the lower fuselage
-    y_fuselage_attach       = "0.0 m" # strut y position at the fuselage attachment
-    thickness_to_chord      = 0.30 # strut thickness to chord
+    thickness_to_chord      = 0.145 # strut thickness to chord; at the upper bound of the C.air airfoil database (t/c 0.09-0.145)
     local_velocity_ratio    = 1.0 # V_strut/V_freestream
     box_width_to_chord      = 0.5 # strut box width to chord ratio
     web_to_box_height       = 0.75 # strut box web height to box height ratio
     end_fixity_K            = 1.0 # Euler effective-length factor of the strut end fixity
-    chord_to_wing_chord     = 0.8 # PLACEHOLDER: strut chord as a fraction of the wing chord at the strut attachment, chosen so that at the default strut-braced geometry the strut + jury share of the wing group weight is near the SUGAR Phase IV value of about 30 %
+    chord_to_wing_chord     = 0.6 # strut chord as a fraction of the wing chord at the strut attachment (placeholder)
+    strut_taper_ratio       = 0.4 # strut chord at the wing end divided by the chord at the fuselage end, 0 < ratio <= 1 (1 is an untapered strut); linear taper whose chord centroid matches the centroid of the symmetric strut loading (1/2 of the strut span)
     min_cap_thickness       = "1.5 mm" # PLACEHOLDER: minimum strut cap thickness (same as the braced wing minimum cap gauge)
     min_web_thickness       = "1.0 mm" # PLACEHOLDER: minimum strut web thickness (same as the braced wing minimum web gauge)
     weight_frac_added       = 0.60 # added weight fraction for fairings and fittings (placeholder)
-    cl_ratio                = 0.0 # strut lift model input: strut section cl divided by the mean section cl of the wing (0 = strut carries no lift)
-    spanload_exponent       = 0.0 # strut lift model input: exponent p of the strut circulation shape (1-xi^2)^p, xi = 0 at the fuselage end and 1 at the wing end (0.0 = constant) (0.5 = elliptic)
+    lift_fraction_strut_to_total = 0.25 # share of the wing + strut lift carried by both struts, L_strut/(L_wing+L_strut); 0 = strut carries no lift
+    spanload_exponent       = 0.5 # strut lift model input: exponent p of the strut circulation shape (4 xi (1-xi))^p, xi = 0 at the fuselage end and 1 at the wing end (p > 0; 0.5 = elliptic-like); also shapes the strut transverse bending and shear
 
 [Wing.Jury]
-    # Vertical jury strut. Only used if `wing_config` is "truss_braced"
+    # Vertical jury strut. Only used if `wing_config` is "truss_braced". It carries part of the strut lift and weight to the wing and is sized by the largest compression and tension of the wing sizing load cases (no minimum load)
     # A coarse scan of eta_strut from 0.05 to 0.95 in steps of 0.05 (truss_braced, panel break eta_s = 0.6, 0.7, 0.75) gives the minimum WMTO and PFEI at 0.5 in every case. The optimum is a sharp V because the main-strut buckling length is max(eta_strut, 1-eta_strut) times the strut length, and the jury weight is negligible (0.02-0.1 % of the wing structure), so the jury position is set by that symmetry only.
     eta_strut = 0.5 # position of the jury along the strut as a fraction of the strut length, from the fuselage end
     weight_frac_added = 0.60 # added weight fraction for fairings and fittings of the jury (placeholder - same as for the strut)
     chord_to_strut_chord = 0.5 # PLACEHOLDER: jury strut chord as a fraction of the main strut chord
+    thickness_to_chord = 0.10 # jury strut thickness to chord (thin, unswept, no lift of its own; inside the airfoil database t/c range 0.09-0.145)
     min_cap_thickness = "1.5 mm" # PLACEHOLDER: minimum jury strut cap thickness
     min_web_thickness = "1.0 mm" # PLACEHOLDER: minimum jury strut web thickness
 
@@ -307,11 +309,7 @@
     lowspeed_cdp = 0.0035
     Re_ref       = 20e6
 
-    #Only used if strut present. Section drag coefficients of the strut, also used for the jury strut (truss_braced).
-    #strut_Re_ref is the Reynolds number (based on strut or jury chord) at which they apply; the drag is Re-scaled with Reynolds_scaling
-    strut_lowspeed_cdf = 0.0085
-    strut_lowspeed_cdp = 0.0035
-    strut_Re_ref       = 1e6
+    # Strut and jury strut section drag come from the wing airfoil database (airfoil), at the member sweep, thickness, lift and Reynolds number
 
     Reynolds_scaling = -0.15 # = aRe, used for Re-scaling CD = cd*(Re/Re_ref)^aRe
 

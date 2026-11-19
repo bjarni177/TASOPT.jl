@@ -911,7 +911,7 @@ end
             wing.strut.spanload_exponent = p
             @test TASOPT.strut_lift_arm(wing) ≈ arm_hand rtol = 1e-12
         end
-        @test TASOPT.strut_lift_centroid_fraction(0.5) == 0.5
+        @test TASOPT.strut_lift_centroid_fraction() == 0.5
 
         # The blend keeps the cantilever arm bit-for-bit without strut lift
         @test TASOPT.strut_blended_lift_arm(co_CMw1, wing, config) === co_CMw1

@@ -381,6 +381,7 @@ function _size_aircraft!(ac; itermax=35,
         V_cruise_EAS = u0 * sqrt(ρ0 / ρSL)
         envelope = evaluate_wing_sizing_cases!(wing, masses, options.has_wing_fuel, para[iarclt, ip], para[iarcls, ip],
                                                Lhtail, γt, γs, Weng1, dyeinn; has_strut = options.has_strut,
+                                               has_jury = options.has_jury,
                                                neinn = neinn, neout = neout, dyeout = dyeout,
                                                far_load_factor = options.opt_far_load_factor,
                                                Mach_cruise = Mach_cruise, V_cruise_EAS = V_cruise_EAS)
@@ -398,7 +399,7 @@ function _size_aircraft!(ac; itermax=35,
                                             Nlift, Weng1, neout, dyeout, neinn, dyeinn,
                                             parg[igsigfac], rhofuel;
                                             has_strut = options.has_strut,
-                                            has_jury = options.opt_wing_config == WingConfig.TrussBraced,
+                                            has_jury = options.has_jury,
                                             design_wing_fuel = Wpay - Wpaymax + parg[igWfuel],
                                             has_wing_fuel = options.has_wing_fuel,
                                             has_centerbox_fuel = options.has_centerbox_fuel,

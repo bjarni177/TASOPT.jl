@@ -267,7 +267,7 @@ end # strut_force_compatibility
         tension, compression, buckling_length, K, shear_load, bending_moment = 0.0, sigfac, min_cap_thickness, min_web_thickness)
 
 Sizes the caps and webs of a rectangular box member (strut or jury strut). The caps carry the axial force (tension,
-compression, Euler buckling) and the bending moment of the member's own weight (yield only); the webs carry the shear load.
+compression, Euler buckling) and the bending moment of the transverse load (own weight and, for the strut, the shaped strut lift; yield only); the webs carry the shear load.
 Lengths are normalised by the member chord ``c`` as in [`WingCrossSection`](@ref); the sweep is ignored. With box height ``h``
 (`height_to_chord`), width ``w`` (`width_to_chord`) and web height ``h_w`` = `web_to_box_height` ``h``:
 ```math
@@ -399,6 +399,79 @@ strut_buckling_length(strut_length, eta_strut) = max(eta_strut, 1.0 - eta_strut)
 strut_buckling_length(strut_length, ::Nothing) = strut_length
 
 """
+    strut_bay_load_factors(spanload_exponent, ξ_start, ξ_end; npts = 2001)
+
+Returns the factors `(κ_M, κ_V)` by which the shaped strut lift raises the bending moment and the end shear of the strut bay
+`ξ ∈ [ξ_start, ξ_end]`, relative to a uniform load of the same mean intensity (the total strut lift over the strut length) on that bay.
+The bay is a simply supported beam and the lift intensity is ``\\propto (4\\xi(1-\\xi))^p`` (``p`` = `spanload_exponent`), with
+``\\xi`` = 0 at the fuselage end and 1 at the wing end of the strut, as set by the strut circulation shape. Both factors are 1 for ``p = 0``.
+`κ_M` is `max M / (q l_b^2 / 8)` and `κ_V` is `max(R_left, R_right) / (q l_b / 2)`, with the mean intensity `q` and bay length `l_b`.
+
+!!! details "🔃 Inputs and Outputs"
+    **Inputs:**
+    - `spanload_exponent::Float64`: Strut spanload exponent ``p``.
+    - `ξ_start::Float64`, `ξ_end::Float64`: Bay ends as fractions of the strut length from the fuselage end.
+    - `npts::Int64`: Number of stations along the bay (`npts - 1` quadrature cells).
+
+    **Outputs:**
+    - `κ_M::Float64`: Bending moment factor.
+    - `κ_V::Float64`: End shear factor.
+"""
+function strut_bay_load_factors(spanload_exponent, ξ_start, ξ_end; npts = 2001)
+    ncell = npts - 1
+    shape(ξ) = (4 * ξ * (1 - ξ))^spanload_exponent
+    mean_shape = sum(shape((i - 0.5) / ncell) for i in 1:ncell) / ncell
+
+    bay = ξ_end - ξ_start
+    dξ = bay / ncell
+    ξ_mid = [ξ_start + (i - 0.5) * dξ for i in 1:ncell]
+    load = shape.(ξ_mid) ./ mean_shape * dξ # lift on each cell for unit strut lift and unit strut length
+    R_left = sum(load[i] * (ξ_end - ξ_mid[i]) for i in 1:ncell) / bay
+    R_right = sum(load) - R_left
+
+    # moment at station k: left reaction minus the load to its left, taken about the station
+    load_left, moment_arm_left = cumsum(load), cumsum(load .* (collect(1:ncell) .- 0.5))
+    M_max = maximum(dξ * (R_left * k - (k * load_left[k] - moment_arm_left[k])) for k in 1:ncell-1)
+    return M_max / (bay^2 / 8), max(R_left, R_right) / (bay / 2)
+end
+
+"""
+    strut_end_shares(spanload_exponent, η_jury; npts = 2001)
+
+Returns the shares `(f_F, f_J, f_W)` of the shaped strut lift that the fuselage end, the jury strut and the wing end of the
+strut carry, for a jury strut at the fraction `η_jury` of the strut length from the fuselage end. The strut is two simply
+supported bays, `[0, η_jury]` and `[η_jury, 1]`, with the lift intensity and quadrature of [`strut_bay_load_factors`](@ref).
+The shares add up to 1.
+
+!!! details "🔃 Inputs and Outputs"
+    **Inputs:**
+    - `spanload_exponent::Float64`: Strut spanload exponent ``p``.
+    - `η_jury::Float64`: Position of the jury strut along the strut, between 0 and 1.
+    - `npts::Int64`: Number of stations along the strut (`npts - 1` quadrature cells).
+
+    **Outputs:**
+    - `f_F::Float64`, `f_J::Float64`, `f_W::Float64`: Fuselage-end, jury and wing-end shares of the strut lift.
+"""
+function strut_end_shares(spanload_exponent, η_jury; npts = 2001)
+    ncell = npts - 1
+    shape(ξ) = (4 * ξ * (1 - ξ))^spanload_exponent
+
+    function bay_reactions(ξ_start, ξ_end)
+        bay = ξ_end - ξ_start
+        dξ = bay / ncell
+        ξ_mid = [ξ_start + (i - 0.5) * dξ for i in 1:ncell]
+        load = shape.(ξ_mid) * dξ
+        R_left = sum(load[i] * (ξ_end - ξ_mid[i]) for i in 1:ncell) / bay
+        return R_left, sum(load) - R_left
+    end
+    f_F, to_jury_fuselage_bay = bay_reactions(0.0, η_jury)
+    to_jury_wing_bay, f_W = bay_reactions(η_jury, 1.0)
+    f_J = to_jury_fuselage_bay + to_jury_wing_bay
+    total = f_F + f_J + f_W # normalises the lift on the two bays to 1
+    return f_F / total, f_J / total, f_W / total
+end
+
+"""
     strut_attach_offset(wing)
 
 Streamwise offset [m] of the strut fuselage end from the wing box: `wing.strut.x_strut_attach - wing.layout.box_x`,
@@ -419,19 +492,15 @@ function strut_sweep(wing)
 end
 
 """
-Jury strut axial load as a fraction of the compression of the main strut [-].
-Assumed bracing-force fraction, not an input.
-"""
-const jury_load_fraction = 0.02
-
-"""
-    size_jury!(wing, etao, etas, sigfac, sinL, cosL)
+    size_jury!(wing, etao, etas, sigfac, sinL, cosL; n_wings = 2.0, section_loads_envelope = nothing)
 
 Sizes the vertical jury strut `wing.jury` of a truss-braced wing: geometry, axial force, area, buckling load,
-weight and weight moment. The jury only restrains the main strut, so its load is `jury_load_fraction` times the
-compression of the main strut (`wing.strut.axial_force_compression`). Its length is ``(1 - \\eta_{strut}) \\sqrt{z^2 + \\Delta x_{attach}^2}`` and its wing
+weight and weight moment. Its tension `jury.axial_force_tension` and compression are the envelope values
+`jury_tension` and `jury_compression` over the wing sizing load cases (see [`evaluate_wing_sizing_cases!`](@ref)).
+Without envelope values (`section_loads_envelope` is `nothing` or has no jury fields) the tension and compression are 0.
+Its length is ``(1 - \\eta_{strut}) \\sqrt{z^2 + \\Delta x_{attach}^2}`` and its wing
 attachment is ``\\eta_o + \\eta_{strut} (\\eta_s - \\eta_o)``. It is a pinned (``K = 1``) box sized by
-[`size_member_box`](@ref) for this compression, with no tension or shear. Its chord is `jury.chord_to_strut_chord` times the
+[`size_member_box`](@ref) for this compression and tension, with no shear. Its chord is `jury.chord_to_strut_chord` times the
 strut chord at the jury attachment; its box height is `jury.thickness_to_chord` times the chord and the other box
 ratios are those of the main strut. The weight includes
 ``1 + f_{added}`` (`jury.weight_frac_added`) and `jury.dxW` is the weight times the streamwise offset
@@ -445,19 +514,23 @@ ratios are those of the main strut. The weight includes
     - `sigfac::Float64`: Stress Factor.
     - `sinL::Float64`: Sine of the wing sweep.
     - `cosL::Float64`: Cosine of the wing sweep.
+    - `n_wings::Float64`: (keyword, default 2.0) Number of wings.
+    - `section_loads_envelope::Union{Nothing,NamedTuple}`: (keyword, default `nothing`) Envelope of [`evaluate_wing_sizing_cases!`](@ref).
 """
-function size_jury!(wing, etao, etas, sigfac, sinL, cosL; n_wings = 2.0)
+function size_jury!(wing, etao, etas, sigfac, sinL, cosL; n_wings = 2.0, section_loads_envelope = nothing)
     jury, strut = wing.jury, wing.strut
 
     jury.eta_wing = etao + jury.eta_strut * (etas - etao)
     dx = strut_attach_offset(wing)
     jury.length = (1.0 - jury.eta_strut) * sqrt(strut.z^2 + dx^2) # jury spans the remaining streamwise and vertical run of the strut
-    jury.axial_force = -jury_load_fraction * abs(strut.axial_force_compression)
+    envelope = isnothing(section_loads_envelope) ? (;) : section_loads_envelope
+    jury.axial_force_compression = get(envelope, :jury_compression, 0.0)
+    jury.axial_force_tension = get(envelope, :jury_tension, 0.0)
 
     jury.chord = jury.chord_to_strut_chord * (strut.root_chord + (strut.chord - strut.root_chord) * jury.eta_strut) # strut chord at the jury attachment
     box = size_member_box(jury.caps, jury.webs;
         chord = jury.chord, height_to_chord = jury.thickness_to_chord, width_to_chord = strut.box_width_to_chord,
-        web_to_box_height = strut.web_to_box_height, tension = 0.0, compression = jury.axial_force,
+        web_to_box_height = strut.web_to_box_height, tension = jury.axial_force_tension, compression = jury.axial_force_compression,
         buckling_length = jury.length, K = 1.0, shear_load = 0.0, sigfac = sigfac,
         min_cap_thickness = jury.min_cap_thickness, min_web_thickness = jury.min_web_thickness)
     jury.area = box.area
@@ -471,13 +544,14 @@ function size_jury!(wing, etao, etas, sigfac, sinL, cosL; n_wings = 2.0)
 end # size_jury!
 
 """
-    unbraced_inboard_loads(wing, po, gammas, Nload, We, neinn, dyeinn, x; F_wing = 0.0)
+    unbraced_inboard_loads(wing, po, gammas, Nload, We, neinn, dyeinn, x; F_wing = 0.0, F_jury = 0.0, x_jury = 0.0)
 
 Returns the shear and bending moment at the distance `x` from the wing root station ηo, in the inboard bay
 of the wing clamped at the root without a strut. The bay is loaded by the break loads
 (`wing.outboard.max_shear_load`, `wing.outboard.moment`), a linear spanload from `po` at the root to `po*gammas`
 at the break, the inboard panel weight and the inboard engines. The upward point load `F_wing` at the strut
-attachment loads the bay for `x < L`. At `x = 0` they are the root loads of [`wing_section_loads`](@ref) before its limiting.
+attachment loads the bay for `x < L`, and the upward point load `F_jury` of the jury strut at the distance `x_jury` from the
+root loads it for `x < x_jury`. At `x = 0` they are the root loads of [`wing_section_loads`](@ref) before its limiting.
 
 !!! details "🔃 Inputs and Outputs"
     **Inputs:**
@@ -490,11 +564,13 @@ attachment loads the bay for `x < L`. At `x = 0` they are the root loads of [`wi
     - `dyeinn::Float64`: Average spanwise moment arm of the inboard engines about the wing root station ηo [m].
     - `x::Float64`: Distance from the wing root station ηo, between 0 and the bay length [m].
     - `F_wing::Float64`: (keyword, default 0.0) Upward point load at the strut attachment, at the end of the bay [N].
+    - `F_jury::Float64`: (keyword, default 0.0) Upward point load of the jury strut on the wing [N].
+    - `x_jury::Float64`: (keyword, default 0.0) Distance of the jury strut from the wing root station ηo [m].
 
     **Outputs:**
     - `(S, M)`: Shear [N] and bending moment [N m], positive for upward lift loading.
 """
-function unbraced_inboard_loads(wing, po, gammas, Nload, We, neinn, dyeinn, x; F_wing = 0.0)
+function unbraced_inboard_loads(wing, po, gammas, Nload, We, neinn, dyeinn, x; F_wing = 0.0, F_jury = 0.0, x_jury = 0.0)
     L = 0.5 * wing.layout.span * (wing.layout.ηs - wing.layout.ηo)
     u = L - x
 
@@ -509,6 +585,10 @@ function unbraced_inboard_loads(wing, po, gammas, Nload, We, neinn, dyeinn, x; F
         S += F_wing
         M += F_wing * u
     end
+    if x < x_jury
+        S += F_jury
+        M += F_jury * (x_jury - x)
+    end
     if wing.inboard.weight != 0.0 && x <= wing.inboard.dyW / wing.inboard.weight
         S -= Nload * wing.inboard.weight
         M -= Nload * (wing.inboard.dyW - wing.inboard.weight * x)
@@ -521,17 +601,17 @@ function unbraced_inboard_loads(wing, po, gammas, Nload, We, neinn, dyeinn, x; F
 end # unbraced_inboard_loads
 
 """
-    strut_reaction(wing, po, gammas, M0, L, ls, F_wing)
+    strut_reaction(wing, po, gammas, M0, L, ls, F_wing; F_jury = 0.0, x_jury = 0.0)
 
-Returns the vertical strut reaction on the inboard bay of a braced wing, positive upward, for the model
-`wing.strut.opt_strut_force`:
-- `Compatibility`: [`strut_force_compatibility`](@ref) with the unbraced bay moment `M0(x)`, a bending stiffness
-  varying linearly from `wing.inboard.EI[1]` at the root to `wing.outboard.EI[1]` at the attachment, and the strut flexibility
-  ```math
-  f_s = \\frac{l_s}{E_s\\,A_s\\,\\sin^2\\theta}, \\qquad \\sin\\theta = \\frac{z}{l_s}
-  ```
-  with the strut area ``A_s`` (`wing.strut.area`) and stiffness from the previous sizing iteration.
-- `Prescribed`: `R = (po b / 12) (ηs - ηo) (1 + 2 γs) + S_break + F_wing`.
+Returns the vertical strut reaction on the inboard bay of a braced wing, positive upward. It is the result of
+[`strut_force_compatibility`](@ref) with the unbraced bay moment `M0(x)`, a bending stiffness
+varying linearly from `wing.inboard.EI[1]` at the root to `wing.outboard.EI[1]` at the attachment, and the strut flexibility
+```math
+f_s = \\frac{l_s}{E_s\\,A_s\\,\\sin^2\\theta}, \\qquad \\sin\\theta = \\frac{z}{l_s}
+```
+with the strut area ``A_s`` (`wing.strut.area`) and stiffness from the previous sizing iteration.
+While the stiffness and the strut area are zero (first sizing iteration), the start-up value
+`R = (po b / 12) (ηs - ηo) (1 + 2 γs) + S_break + F_wing + F_jury x_jury / L` is returned instead.
 
 !!! details "🔃 Inputs and Outputs"
     **Inputs:**
@@ -541,24 +621,26 @@ Returns the vertical strut reaction on the inboard bay of a braced wing, positiv
     - `M0::Function`: Bending moment of the unbraced inboard bay [N m] at the distance `x` from the root, `M0(x)`.
     - `L::Float64`: Length of the inboard bay, from the root to the strut attachment [m].
     - `ls::Float64`: Length of the strut in the plane of the strut [m].
-    - `F_wing::Float64`: Upward point load at the strut attachment from the lift of the strut [N], see [`strut_wing_end_lift`](@ref).
+    - `F_wing::Float64`: Upward point load at the strut attachment from the loads of the strut [N], see [`wing_case_loads`](@ref).
+    - `F_jury::Float64`: (keyword, default 0.0) Upward point load of the jury strut on the wing [N].
+    - `x_jury::Float64`: (keyword, default 0.0) Distance of the jury strut from the wing root station ηo [m].
 
     **Outputs:**
     - `R::Float64`: Vertical strut reaction on the wing [N].
 """
-function strut_reaction(wing, po, gammas, M0, L, ls, F_wing)
+function strut_reaction(wing, po, gammas, M0, L, ls, F_wing; F_jury = 0.0, x_jury = 0.0)
     EI_root, EI_attach, A_strut = wing.inboard.EI[1], wing.outboard.EI[1], wing.strut.area
 
-    # TEMPORARY FALLBACK: stiffness and strut area are zero in the first sizing iteration; use the prescribed force.
+    # Stiffness and strut area are zero in the first sizing iteration; use the closed-form start-up value.
     stiffness_known = EI_root > 0.0 && EI_attach > 0.0 && A_strut > 0.0
 
-    if wing.strut.opt_strut_force == StrutForceModel.Compatibility && stiffness_known
+    if stiffness_known
         EI(x) = EI_root + (EI_attach - EI_root) * x / L
         f_strut = ls / (wing.strut.caps.material.E * A_strut * (wing.strut.z / ls)^2)
         return strut_force_compatibility(M0, EI, L, f_strut)
     else
         return (po * wing.layout.span / 12.0) * (wing.layout.ηs - wing.layout.ηo) * (1.0 + 2.0 * gammas) +
-               wing.outboard.max_shear_load + F_wing
+               wing.outboard.max_shear_load + F_wing + F_jury * x_jury / L
     end
 end # strut_reaction
 
@@ -603,15 +685,36 @@ pinned ends and its loading ``(4\\xi(1-\\xi))^p`` is symmetric, with the centroi
     **Outputs:**
     - `F_wing::Float64`: Part of the strut lift at the wing end of the strut [N], with the sign of `F_strut`.
 """
-strut_wing_end_lift(wing, F_strut) = strut_lift_centroid_fraction(wing.strut.spanload_exponent) * F_strut
+strut_wing_end_lift(wing, F_strut) = strut_lift_centroid_fraction() * F_strut
 
 """
-    strut_fuselage_end_force(wing, R, ls; strut_fuel_load = 0.0)
+    strut_end_loads(wing, F_strut, strut_inertia_load, L, has_jury)
+
+Returns the loads that the strut of one wing puts on the wing, for the strut lift `F_strut` and the uniform downward
+load `strut_inertia_load` (strut weight and fuel inertia) on a bay of length `L`, as `(F_wing, F_jury, x_jury, fuselage_share, wing_end_lift)`:
+the upward point loads at the strut attachment and at the jury strut, the distance of the jury strut from the root station
+(0 without a jury), the share of `strut_inertia_load` at the fuselage end of the strut and the part of `F_strut` at the wing end.
+See [`wing_case_loads`](@ref).
+"""
+function strut_end_loads(wing, F_strut, strut_inertia_load, L, has_jury)
+    if has_jury
+        η_jury = wing.jury.eta_strut
+        _, f_J, f_W = strut_end_shares(wing.strut.spanload_exponent, η_jury)
+        return (F_wing = f_W * F_strut - (1 - η_jury) * strut_inertia_load / 2, F_jury = f_J * F_strut - strut_inertia_load / 2, x_jury = η_jury * L,
+                fuselage_share = η_jury / 2, wing_end_lift = f_W * F_strut)
+    end
+    wing_end_lift = strut_wing_end_lift(wing, F_strut)
+    return (F_wing = wing_end_lift - strut_inertia_load / 2, F_jury = 0.0, x_jury = 0.0, fuselage_share = 0.5, wing_end_lift = wing_end_lift)
+end
+
+"""
+    strut_fuselage_end_force(wing, R, ls; uniform_load = 0.0, fuselage_share = 0.5)
 
 Returns the axial force of the strut at its fuselage end, positive in tension, for the strut reaction `R`, the strut
-length `ls` and the inertia load `strut_fuel_load` of the strut fuel (see [`wing_case_loads`](@ref)):
+length `ls` and the uniform downward load `uniform_load` (strut weight and fuel inertia, see [`wing_case_loads`](@ref)),
+of which the share `fuselage_share` acts at the fuselage end of the strut:
 ```math
-T_f = R\\,\\frac{l_s}{z} - \\frac{F_{fuel}}{2}\\frac{z}{l_s}
+T_f = R\\,\\frac{l_s}{z} - s_F\\,Q\\,\\frac{z}{l_s}
 ```
 The strut lift acts normal to the strut, so it adds no axial force.
 
@@ -620,18 +723,18 @@ The strut lift acts normal to the strut, so it adds no axial force.
     - `wing::TASOPT.structures.Wing`: Wing structure, with the strut height `wing.strut.z`.
     - `R::Float64`: Strut reaction on the wing [N], see [`strut_reaction`](@ref).
     - `ls::Float64`: Length of the strut in the plane of the strut [m].
-    - `strut_fuel_load::Float64`: (keyword, default 0.0) Inertia load of the fuel in one strut, positive downward [N].
-      Half of it acts at the fuselage end of the strut.
+    - `uniform_load::Float64`: (keyword, default 0.0) Uniform downward load ``Q`` on the strut of one wing (inertia of strut weight and fuel) [N].
+    - `fuselage_share::Float64`: (keyword, default 0.5) Share ``s_F`` of `uniform_load` that acts at the fuselage end of the strut.
 
     **Outputs:**
     - `T_f::Float64`: Axial force of the strut at the fuselage end [N].
 """
-strut_fuselage_end_force(wing, R, ls; strut_fuel_load = 0.0) =
-    R * ls / wing.strut.z - strut_fuel_load / 2 * wing.strut.z / ls
+strut_fuselage_end_force(wing, R, ls; uniform_load = 0.0, fuselage_share = 0.5) =
+    R * ls / wing.strut.z - fuselage_share * uniform_load * wing.strut.z / ls
 
 """
     wing_case_loads(::Braced, wing, po, gammat, gammas, Nload, We, neout, dyeout, neinn, dyeinn;
-        strut_lift = 0.0, strut_fuel_load = 0.0)
+        strut_lift = 0.0, strut_fuel_load = 0.0, has_jury = false)
 
 Returns the root and break loads, the strut force and the axial force of a wing braced by a strut for one load
 case, as a [`WingCaseLoads`](@ref). The inboard bay of length ``L = (b/2)(η_s - η_o)`` is that of
@@ -642,11 +745,20 @@ case, as a [`WingCaseLoads`](@ref). The inboard bay of length ``L = (b/2)(η_s -
 The strut has pinned ends, the fuselage end at the origin and the wing end at ``(L, z)``. The vertical lift
 ``F_{strut}`` acts at ``\\xi_{cp} L`` normal to the strut, as ``F_{strut}/\\cos\\Gamma`` with the strut angle
 ``\\Gamma = \\operatorname{atan}(z/L)``, so it adds the inboard horizontal force ``F_{strut}\\tan\\Gamma`` and no axial force
-in the strut. The inertia load ``F_{fuel}`` of the strut fuel (`strut_fuel_load`, positive downward) acts
-at mid-strut, so each end carries half of it. The wing end carries ``F_{wing} = \\xi_{cp} F_{strut} - F_{fuel}/2``.
-The fuselage end governs, in tension and in compression:
+in the strut. The uniform downward load ``Q = W_s + F_{fuel}`` is the inertia of the strut weight
+``W_s = N\\, W_{strut}/2`` (`wing.strut.weight` of the previous sizing iteration, both wings) and of the strut fuel ``F_{fuel}`` (`strut_fuel_load`,
+positive downward). Without a jury, the strut is a simply supported beam: each end carries half of ``Q``, the wing end
+carries ``F_{wing} = \\xi_{cp} F_{strut} - Q/2`` and the fuselage end governs, in tension and in compression:
 ```math
-T = T_f = R\\,\\frac{l_s}{z} - \\frac{F_{fuel}}{2}\\frac{z}{l_s}, \\qquad P = -R\\,\\frac{L}{z} - \\xi_{cp}\\,F_{strut}\\,\\frac{z}{L}, \\qquad l_s = \\sqrt{z^2 + L^2}
+T = T_f = R\\,\\frac{l_s}{z} - \\frac{Q}{2}\\frac{z}{l_s}, \\qquad P = -R\\,\\frac{L}{z} - \\xi_{cp}\\,F_{strut}\\,\\frac{z}{L}, \\qquad l_s = \\sqrt{z^2 + L^2}
+```
+With `has_jury`, a vertical jury strut at the fraction ``\\eta`` of the strut (`wing.jury.eta_strut`) is a rigid support of two
+simply supported strut bays. The fuselage end, the jury and the wing end carry the shares ``(f_F, f_J, f_W)`` of the strut
+lift ([`strut_end_shares`](@ref)) and the shares ``(\\eta/2, 1/2, (1-\\eta)/2)`` of ``Q``. The jury loads the wing with the upward
+force ``J = f_J F_{strut} - Q/2`` at the distance ``\\eta L`` from the root, and the wing end carries
+``F_{wing} = f_W F_{strut} - (1-\\eta) Q/2``. The jury is vertical, so it adds no horizontal force, and
+```math
+T = R\\,\\frac{l_s}{z} - \\eta\\frac{Q}{2}\\frac{z}{l_s}, \\qquad P = -R\\,\\frac{L}{z} - f_W\\,F_{strut}\\,\\frac{z}{L}
 ```
 `T` is positive in tension. `P` is the axial force in the inboard wing, positive in tension, so an under-wing strut in a
 pull-up compresses the wing.
@@ -658,7 +770,7 @@ The returned loads are
   ``S_0(x) - R`` and moment ``M_0(x) - R (L - x)`` (the last station excludes the point load `F_wing`);
 - `M_inboard_extreme`: the largest magnitude of `inboard_moment`;
 - `strut_reaction`, `strut_force` (``T``), `P_axial_inboard` (``P``), `strut_lift` (``F_{strut}``, with the sign of the load factor)
-and `strut_fuel_load` (``F_{fuel}``).
+`strut_fuel_load` (``F_{fuel}``), `strut_weight_load` (``W_s``) and `jury_force` (``J``, 0 without a jury; the axial force of the jury is ``-J``, negative in compression).
 
 Limitations: the offset torque of the strut joint is not modelled, and the panel weights are those of the design cruise
 mass state in every case. `wing.strut.force_vertical` and `wing.strut.force_horizontal` of [`wing_weights!`](@ref) are the
@@ -681,38 +793,43 @@ Mutates `wing.outboard.max_shear_load` and `wing.outboard.moment`; pass a copy t
     - `dyeinn::Float64`: Average spanwise moment arm of the inboard engines about the wing root station ηo [m].
     - `strut_lift::Float64`: (keyword, default 0.0) Lift on the strut of one wing [N], with the sign of the load factor.
     - `strut_fuel_load::Float64`: (keyword, default 0.0) Inertia load of the fuel in the strut of one wing, positive downward [N].
+    - `has_jury::Bool`: (keyword, default `false`) Whether the strut has a vertical jury strut at `wing.jury.eta_strut`.
 
     **Outputs:**
     - `WingCaseLoads`: Shear and moment at the wing root and at the wing break, the shear and moment along the
-      inboard wing, the extreme inboard moment, the strut reaction and force, the lift and fuel load on the strut and
-      the axial force in the inboard wing.
+      inboard wing, the extreme inboard moment, the strut reaction and force, the lift, fuel and weight load on the strut,
+      the jury force and the axial force in the inboard wing.
 """
 function wing_case_loads(::Braced, wing, po, gammat, gammas, Nload, We, neout, dyeout, neinn, dyeinn;
-        strut_lift = 0.0, strut_fuel_load = 0.0)
+        strut_lift = 0.0, strut_fuel_load = 0.0, has_jury = false)
     outboard_section_loads!(wing, po, gammat, gammas, Nload, We, neout, dyeout)
 
     L = 0.5 * wing.layout.span * (wing.layout.ηs - wing.layout.ηo)
     z = wing.strut.z
     ls = sqrt(z^2 + L^2)
 
-    F_wing = strut_wing_end_lift(wing, strut_lift) - strut_fuel_load / 2
-    inboard_loads(x) = unbraced_inboard_loads(wing, po, gammas, Nload, We, neinn, dyeinn, x; F_wing)
+    # uniform downward load on the strut of one wing: strut weight and fuel inertia
+    strut_weight_load = Nload * wing.strut.weight / 2
+    strut_inertia_load = strut_weight_load + strut_fuel_load
+    (; F_wing, F_jury, x_jury, fuselage_share, wing_end_lift) = strut_end_loads(wing, strut_lift, strut_inertia_load, L, has_jury)
+    inboard_loads(x) = unbraced_inboard_loads(wing, po, gammas, Nload, We, neinn, dyeinn, x; F_wing, F_jury, x_jury)
     M0(x) = inboard_loads(x).M
-    R = strut_reaction(wing, po, gammas, M0, L, ls, F_wing)
+    R = strut_reaction(wing, po, gammas, M0, L, ls, F_wing; F_jury, x_jury)
 
     stations = range(0.0, L; length = 11)
     M_stations = [M0(x) - R * (L - x) for x in stations]
     S_stations = [inboard_loads(x).S - R for x in stations]
-    strut_force = strut_fuselage_end_force(wing, R, ls; strut_fuel_load)
+    strut_force = strut_fuselage_end_force(wing, R, ls; uniform_load = strut_inertia_load, fuselage_share)
 
     root = inboard_loads(0.0)
     return WingCaseLoads(S_root = root.S - R, M_root = root.M - R * L,
                          S_break = wing.outboard.max_shear_load, M_break = wing.outboard.moment,
                          M_inboard_extreme = M_stations[argmax(abs.(M_stations))],
-                         P_axial_inboard = -R * L / z - strut_wing_end_lift(wing, strut_lift) * z / L, strut_force = strut_force,
+                         P_axial_inboard = -R * L / z - wing_end_lift * z / L, strut_force = strut_force,
                          inboard_stations = collect(stations), inboard_shear = S_stations,
                          inboard_moment = M_stations, strut_reaction = R, strut_lift = strut_lift,
-                         strut_fuel_load = strut_fuel_load)
+                         strut_fuel_load = strut_fuel_load,
+                         strut_weight_load = strut_weight_load, jury_force = F_jury)
 end # wing_case_loads
 
 """
@@ -902,7 +1019,7 @@ end # wing_sizing_masses
 
 """
     evaluate_wing_sizing_cases!(wing, masses, has_wing_fuel, rclt, rcls, Lhtail, gammat, gammas, We, dyeinn;
-        has_strut = false, neinn = 1, neout = 0, dyeout = 0.0, far_load_factor = false,
+        has_strut = false, has_jury = false, neinn = 1, neout = 0, dyeout = 0.0, far_load_factor = false,
         Mach_cruise = NaN, V_cruise_EAS = 0.0)
 
 Computes the root and break loads of every active wing sizing load case and returns their envelope, for a
@@ -912,7 +1029,7 @@ break bending moment in `governing_root` and `governing_break`.
 
 For a braced wing, the case with the largest strut tension is stored in `governing_strut` and the most compressed one
 (if any) in `governing_strut_compression`. The inboard envelope is the largest over the cases of the root and interior
-moment and of the root and break shear.
+moment and of the root and break shear. With `has_jury`, the envelope also has the largest jury tension and compression.
 
 Gust cases use the load factor ``1 \\pm \\Delta n`` of [`wing_case_load_factor`](@ref). By default the wing has one engine at the
 inboard side; `neinn`, `neout` and `dyeout` set other engine locations (see [`wing_engine_arms`](@ref)). The section
@@ -932,6 +1049,7 @@ loads of `wing` are not modified.
     - `We::Float64`: Weight of one engine [N].
     - `dyeinn::Float64`: Average spanwise moment arm of the inboard engine about the wing root station ηo [m].
     - `has_strut::Bool`: (keyword, default `false`) Whether the wing is braced by a strut.
+    - `has_jury::Bool`: (keyword, default `false`) Whether the strut has a vertical jury strut (only with `has_strut`).
     - `neinn::Int`: (keyword, default 1) Number of engines per wing mounted at or inboard of the wing break.
     - `neout::Int`: (keyword, default 0) Number of engines per wing mounted outboard of the wing break.
     - `dyeout::Float64`: (keyword, default 0.0) Average spanwise moment arm of the outboard engines about the wing break station ηs [m].
@@ -942,13 +1060,15 @@ loads of `wing` are not modified.
     **Outputs:**
     - Cantilever wing: `(S_root, M_root, S_break, M_break)`: Largest magnitude of the shear and moment
       at the root and at the break, or `nothing` if no case was evaluated.
-    - Braced wing: `(S_root, M_root, S_break, M_break, T_strut, T_strut_compression, P_axial)`, with the inboard
-      envelope loads `S_root` and `M_root`, the largest strut tension `T_strut` [N] (0 if always compressed), the most
-      negative strut force `T_strut_compression` [N] (0 if never compressed) and the largest-magnitude inboard axial
-      force `P_axial` [N] (negative in compression), or `nothing` if no case was evaluated.
+    - Braced wing: `(S_root, M_root, S_break, M_break, T_strut, T_strut_compression, P_axial, jury_tension, jury_compression)`,
+      with the inboard envelope loads `S_root` and `M_root`, the largest strut tension `T_strut` [N] (0 if always compressed), the most
+      negative strut force `T_strut_compression` [N] (0 if never compressed), the largest-magnitude inboard axial
+      force `P_axial` [N] (negative in compression), the largest jury axial force `jury_tension` [N] (at least 0) and the most
+      negative one `jury_compression` [N] (at most 0), or `nothing` if no case was evaluated. The jury axial force of a case is
+      the negative of its `jury_force`.
 """
 function evaluate_wing_sizing_cases!(wing, masses, has_wing_fuel, rclt, rcls, Lhtail, gammat, gammas, We, dyeinn;
-        has_strut = false, neinn = 1, neout = 0, dyeout = 0.0, far_load_factor = false,
+        has_strut = false, has_jury = false, neinn = 1, neout = 0, dyeout = 0.0, far_load_factor = false,
         Mach_cruise = NaN, V_cruise_EAS = 0.0)
     sl = wing.sizing_loads
     n_pullup = wing_case_load_factor(:pullup, sl.pullup, masses.W_MTO, far_load_factor)
@@ -978,7 +1098,7 @@ function evaluate_wing_sizing_cases!(wing, masses, has_wing_fuel, rclt, rcls, Lh
             strut_fuel_load = wing.strut.fuel_capacity > 0.0 ?
                 Nload * ms.r_fuel_wing * wing.strut.fuel_capacity / 2.0 : 0.0
             sl.results[name] = wing_case_loads(config, deepcopy(wing), po, gammat, gammas, Nload, We, neout, dyeout, neinn, dyeinn;
-                                               strut_lift = F_strut, strut_fuel_load)
+                                               strut_lift = F_strut, strut_fuel_load, has_jury)
         else
             sl.results[name] = wing_case_loads(config, deepcopy(wing), po, gammat, gammas, Nload, We, neout, dyeout, neinn, dyeinn)
         end
@@ -997,12 +1117,15 @@ function evaluate_wing_sizing_cases!(wing, masses, has_wing_fuel, rclt, rcls, Lh
         strut_compression, i_compression = findmin(strut_forces)
         strut_compression < 0 && (sl.governing_strut_compression = names[i_compression])
         cases = [sl.results[name] for name in names]
+        jury_axial_forces = [-c.jury_force for c in cases]
         return (S_root = maximum(max(abs(c.S_root), abs(c.S_break)) for c in cases),
                 M_root = maximum(max(abs(c.M_root), abs(c.M_inboard_extreme)) for c in cases),
                 S_break = abs(brk.S_break), M_break = abs(brk.M_break),
                 T_strut = max(0.0, maximum(strut_forces)),
                 T_strut_compression = min(0.0, strut_compression),
-                P_axial = cases[argmax([abs(c.P_axial_inboard) for c in cases])].P_axial_inboard)
+                P_axial = cases[argmax([abs(c.P_axial_inboard) for c in cases])].P_axial_inboard,
+                jury_tension = max(0.0, maximum(jury_axial_forces)),
+                jury_compression = min(0.0, minimum(jury_axial_forces)))
     end
     return (S_root = abs(root.S_root), M_root = abs(root.M_root),
             S_break = abs(brk.S_break), M_break = abs(brk.M_break))
@@ -1087,7 +1210,9 @@ Also returns the material gauges, torsional and bending stiffness. Formerly, `ge
     - `has_strut_fuel::Bool`: Whether fuel is also stored in the strut box (only with `has_strut`); sets `wing.strut.fuel_capacity`,
         which is added to the wing tank capacity so that the wing and strut tanks have one fill fraction.
     - `section_loads_envelope::Union{Nothing,NamedTuple}`: Envelope of the section loads `(S_root, M_root, S_break, M_break)` over the
-        wing sizing cases. If given, it replaces the computed inboard and outboard shear and moment before sizing.
+        wing sizing cases. If given, it replaces the computed inboard and outboard shear and moment before sizing. Required for a
+        braced wing (`has_strut = true`), where it also gives the strut tension `T_strut` and the inboard axial load `P_axial`.
+        With a jury strut, its `jury_tension` and `jury_compression` size the jury (see `size_jury!`).
 
 See [Geometry](@ref geometry),  [Wing/Tail Structures](@ref wingtail), and Section 2.7  of the [TASOPT Technical Description](@ref dreladocs). 
 """
@@ -1108,9 +1233,7 @@ function wing_weights!(wing, po, gammat, gammas,
     h_avgs, h_rmss = get_average_sparbox_heights(wing.outboard.cross_section)
 
     outboard_section_loads!(wing, po, gammat, gammas, Nload, We, neout, dyeout)
-    has_braced_envelope = has_strut && !isnothing(section_loads_envelope) &&
-                          wing.strut.opt_strut_force == StrutForceModel.Compatibility
-    if (!has_strut || has_braced_envelope) && !isnothing(section_loads_envelope)
+    if !isnothing(section_loads_envelope)
         wing.outboard.max_shear_load = section_loads_envelope.S_break
         wing.outboard.moment = section_loads_envelope.M_break
     end
@@ -1124,9 +1247,6 @@ function wing_weights!(wing, po, gammat, gammas,
     if !has_strut
         #----- no strut, with or without engine at etas
         ls = 0.
-        Tstrut = 0.
-        Rstrut = 0.
-        Pstrut = 0.
 
         wing_section_loads(Cantilever(), wing, po, gammas, Nload, We, neinn, dyeinn)
         if !isnothing(section_loads_envelope)
@@ -1150,31 +1270,15 @@ function wing_weights!(wing, po, gammat, gammas,
     else
         #----- strut present
         ls = sqrt(wing.strut.z^2 + (0.5*wing.layout.span*(etas-etao))^2)
-        Tstrut_compression = 0.
-        if has_braced_envelope
-            #----- strut tension and inboard loads from the sizing load cases
-            Tstrut = section_loads_envelope.T_strut
-            Tstrut_compression = get(section_loads_envelope, :T_strut_compression, 0.0)
-            wing.inboard.max_shear_load = section_loads_envelope.S_root
-            wing.inboard.moment = section_loads_envelope.M_root
+        #----- strut tension and inboard loads from the sizing load cases
+        Tstrut = section_loads_envelope.T_strut
+        Tstrut_compression = get(section_loads_envelope, :T_strut_compression, 0.0)
+        wing.inboard.max_shear_load = section_loads_envelope.S_root
+        wing.inboard.moment = section_loads_envelope.M_root
 
-            #----- size inboard station at etao
-            inboard_dims = size_wing_section!(wing.inboard, wing.sweep, sigfac;
-                                              P_axial = section_loads_envelope.P_axial)
-        else
-            F_strut = strut_lift_on_strut(wing, po, gammat, gammas)
-            F_wing = strut_wing_end_lift(wing, F_strut)
-            Rstrut = (po*wing.layout.span/12.0)*(etas-etao)*(1.0+2.0*gammas) + wing.outboard.max_shear_load + F_wing
-            Tstrut = strut_fuselage_end_force(wing, Rstrut, ls)
-            #c     Pstrut = Rstrut*0.5*wing.layout.span*(etas-etao)/zs
-
-            #----- inboard shear,moment used for sparbox sizing
-            wing.inboard.max_shear_load = wing.outboard.max_shear_load
-            wing.inboard.moment = wing.outboard.moment
-            #
-            #----- size inboard station at etao
-            inboard_dims = size_wing_section!(wing.inboard, wing.sweep, sigfac)
-        end
+        #----- size inboard station at etao
+        inboard_dims = size_wing_section!(wing.inboard, wing.sweep, sigfac;
+                                          P_axial = section_loads_envelope.P_axial)
 
         #----- total strut length, tension
         dx = strut_attach_offset(wing)
@@ -1207,26 +1311,30 @@ function wing_weights!(wing, po, gammat, gammas,
         strut.root_chord = strut.chord / strut.taper_ratio
         buckling_length = strut_buckling_length(lsp, has_jury ? wing.jury.eta_strut : nothing)
 
-        # largest load factor of the active sizing cases, or Nload without the envelope
-        n_max = Nload
-        if has_braced_envelope
-            sl = wing.sizing_loads
-            n_max = maximum(abs(getfield(sl, name).n_computed) for name in fieldnames(WingSizingLoads)
-                            if getfield(sl, name) isa WingLoadCase && getfield(sl, name).active; init = 0.0)
-        end
+        # largest load factor of the active sizing cases
+        sl = wing.sizing_loads
+        n_max = maximum(abs(getfield(sl, name).n_computed) for name in fieldnames(WingSizingLoads)
+                        if getfield(sl, name) isa WingLoadCase && getfield(sl, name).active; init = 0.0)
         W_strut_one_wing = strut.weight / n_wings
-        # strut lift F is normal to the strut (vertical part F, horizontal F tanΓ); weight W is vertical, positive down
+        # strut lift F is normal to the strut (vertical part F, horizontal F tanΓ); weight W is vertical, positive down. Returns the intensity for uniform F and W
         perpendicular_load(F, W) = sqrt(F^2 / cos(strut.dihedral)^2 - 2 * F * W + W^2 * (1 - strut.z^2 / lsp^2)) / lsp
+        # the strut lift is shaped along the strut; weight and fuel stay uniform
+        eta_strut = has_jury ? wing.jury.eta_strut : nothing
+        bay = isnothing(eta_strut) ? (0.0, 1.0) : eta_strut >= 0.5 ? (0.0, eta_strut) : (eta_strut, 1.0)
+        κ_M, κ_V = strut_bay_load_factors(strut.spanload_exponent, bay...)
         if any(r.strut_lift != 0 for r in values(results))
             sl = wing.sizing_loads
-            q_perp = maximum(perpendicular_load(r.strut_lift, getfield(sl, name).n_computed * W_strut_one_wing + r.strut_fuel_load)
-                             for (name, r) in results)
+            transverse_load(κ) = maximum(
+                perpendicular_load(κ * r.strut_lift, getfield(sl, name).n_computed * W_strut_one_wing + r.strut_fuel_load)
+                for (name, r) in results)
+            q_perp_V = transverse_load(κ_V)
+            q_perp_M = transverse_load(κ_M)
         else
-            q_perp = perpendicular_load(0.0, n_max * W_strut_one_wing)
+            q_perp_V = q_perp_M = perpendicular_load(0.0, n_max * W_strut_one_wing)
         end
-        V_transverse = q_perp * buckling_length / 2
-        strut.bending_moment = q_perp * buckling_length^2 / 8
-        strut.shear_load = (has_jury ? abs(wing.jury.axial_force) : 0.0) + V_transverse
+        V_transverse = q_perp_V * buckling_length / 2
+        strut.bending_moment = q_perp_M * buckling_length^2 / 8
+        strut.shear_load = V_transverse
 
         # box is sized on the chord perpendicular to the strut axis, as the wing box is (c cosΛ)
         box = size_member_box(strut.caps, strut.webs;
@@ -1252,7 +1360,7 @@ function wing_weights!(wing, po, gammat, gammas,
             strut_fuel_capacity = n_wings*rhofuel*gee*Abfuelstrut*mean_chord_squared*lsp
         end
         strut.fuel_capacity = strut_fuel_capacity
-        has_jury && size_jury!(wing, etao, etas, sigfac, sinL, cosL; n_wings = n_wings) 
+        has_jury && size_jury!(wing, etao, etas, sigfac, sinL, cosL; n_wings = n_wings, section_loads_envelope = section_loads_envelope)
     end
 
     Abfuels = calc_sparbox_internal_area(wing.inboard.cross_section.width_to_chord,

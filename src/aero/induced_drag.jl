@@ -130,12 +130,12 @@ function strut_lift_share(wing, trefftz_config::TrefftzPlaneConfig)
 end
 
 """
-    strut_lift_centroid_fraction(p)
+    strut_lift_centroid_fraction()
 
 Centroid fraction ``\\xi_{cp}`` of the strut loading ``(4\\xi(1-\\xi))^p`` on ``0 \\le \\xi \\le 1`` (``\\xi = 0`` at the fuselage end).
-The loading is symmetric, so ``\\xi_{cp} = 1/2`` for every exponent `p`; `p` is not used.
+The loading is symmetric, so ``\\xi_{cp} = 1/2`` for every exponent `p`.
 """
-strut_lift_centroid_fraction(p) = 0.5
+strut_lift_centroid_fraction() = 0.5
 
 """
     strut_lift_arm(wing)
@@ -151,7 +151,7 @@ The strut lies along the wing box sweep from the wing root station, offset strea
 """
 function strut_lift_arm(wing)
     strut = wing.strut
-    ξ_cp = strut_lift_centroid_fraction(strut.spanload_exponent)
+    ξ_cp = strut_lift_centroid_fraction()
     y_root = 0.5 * wing.layout.root_span
     y_attach = 0.5 * wing.layout.break_span
     c_cp = strut.root_chord + (strut.chord - strut.root_chord) * ξ_cp

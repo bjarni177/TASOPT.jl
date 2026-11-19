@@ -38,11 +38,9 @@ $TYPEDFIELDS
     min_web_thickness::Float64 = 1.0e-3
     """Strut local velocity ratio"""
     local_velocity_ratio::Float64 = 0
-    """Strut force model"""
-    opt_strut_force::StrutForceModel.T = StrutForceModel.Compatibility
     """Strut lift over wing plus strut lift, ``L_{strut} / (L_{wing} + L_{strut})`` (0 = no strut lift)"""
     lift_fraction_strut_to_total::Float64 = 0.25
-    """Strut spanload exponent ``p`` (``p > 0``), ``\\Gamma \\propto (4\\xi(1-\\xi))^p`` with ``\\xi`` = 0 at fuselage, 1 at wing (``p = 0.5`` is elliptic-like)"""
+    """Strut spanload exponent ``p`` (``p > 0``), ``\\Gamma \\propto (4\\xi(1-\\xi))^p`` with ``\\xi`` = 0 at fuselage, 1 at wing (``p = 0.5`` is elliptic-like). Also shapes the strut lift for the strut transverse shear and bending (`strut_bay_load_factors`)"""
     spanload_exponent::Float64 = 0.5
     """Fuselage x of the strut attach [m]. NaN follows the wing box, `wing.layout.box_x`. Also sets the strut streamwise run and sweep"""
     x_strut_attach::Float64 = NaN
@@ -66,9 +64,9 @@ $TYPEDFIELDS
     axial_force::Float64 = 0
     """Strut axial force in the most compressive case [N] (<= 0)"""
     axial_force_compression::Float64 = 0
-    """Strut web shear load, jury load plus strut own weight [N]"""
+    """Strut web shear load, transverse shear of the strut lift, weight and fuel [N]"""
     shear_load::Float64 = 0
-    """Strut midspan bending moment from own weight [N m]"""
+    """Strut midspan bending moment of the strut lift (shaped, simply supported bay), weight and fuel [N m]"""
     bending_moment::Float64 = 0
     """Strut Euler buckling load P_cr [N]"""
     buckling_load::Float64 = 0
@@ -107,7 +105,8 @@ end
 $TYPEDEF
 
 Vertical jury strut of a truss-braced wing, connecting the wing to the main strut.
-It shortens the buckling length of the main strut but does not change the wing or strut loads.
+It shortens the buckling length of the main strut and carries part of the strut lift and of the uniform strut loads
+(strut weight and fuel) to the wing, see `wing_case_loads`.
 
 $TYPEDFIELDS
 """
@@ -139,8 +138,10 @@ $TYPEDFIELDS
     area::Float64 = 0
 
     # Loads
-    """Jury strut axial force [N] (compression is negative)"""
-    axial_force::Float64 = 0
+    """Jury strut compression sizing the jury [N] (negative): the largest compression of the load cases"""
+    axial_force_compression::Float64 = 0
+    """Largest jury strut tension of the load cases [N] (0 or positive)"""
+    axial_force_tension::Float64 = 0
     """Jury strut buckling load [N]"""
     buckling_load::Float64 = 0
 
@@ -168,7 +169,8 @@ How the load factor of a wing sizing load case is obtained.
 
 - `Maneuver`: prescribed limit load factor in flight
 - `Gust`: from a discrete gust; `load_factor` gives the sign only
-- `Ground`: prescribed load factor on the ground, no wing lift
+- `Ground`: prescribed load factor on the ground, no wing lift; as in flight, a positive load factor
+  acts the weights downward
 """
 @enumx WingLoadKind Maneuver Gust Ground
 
@@ -232,6 +234,10 @@ $TYPEDFIELDS
     strut_lift::Float64 = 0
     """Inertia load of the fuel in one strut, positive downward [N]"""
     strut_fuel_load::Float64 = 0
+    """Inertia load of the own weight of one strut, positive downward [N]"""
+    strut_weight_load::Float64 = 0
+    """Force of the jury strut on the wing, positive upward [N]; 0 without a jury. The jury axial force is its negative"""
+    jury_force::Float64 = 0
 end
 
 """
@@ -252,7 +258,8 @@ $TYPEDFIELDS
     """Push-over, light mass state"""
     pushover_light::WingLoadCase = WingLoadCase(load_factor = -1.0, mass_state = WingMassState.Light, active = false)
     """Taxi, MTOW with full wing fuel"""
-    taxi::WingLoadCase = WingLoadCase(kind = WingLoadKind.Ground, load_factor = -2.0, mass_state = WingMassState.MTOW_MaxFuel, active = false)
+    # +2, not -2: the loads subtract `Nload * weight` (`S -= Nload * weight`), so a positive load factor puts the weights downward, as on the ground
+    taxi::WingLoadCase = WingLoadCase(kind = WingLoadKind.Ground, load_factor = 2.0, mass_state = WingMassState.MTOW_MaxFuel, active = false)
     """Upward discrete gust, light mass state"""
     gust_up_light::WingLoadCase = WingLoadCase(kind = WingLoadKind.Gust, load_factor = 1.0, mass_state = WingMassState.Light, active = false)
     """Downward discrete gust, light mass state"""

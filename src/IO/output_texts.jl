@@ -9,7 +9,7 @@ function weight_buildup(ac::aircraft; io=stdout)
     vtail = ac.vtail
     landing_gear = ac.landing_gear
     has_strut = ac.options.has_strut
-    has_jury = ac.options.opt_wing_config == WingConfig.TrussBraced
+    has_jury = ac.options.has_jury
     Wempty  = parg[igWMTO] - parg[igWfuel] - parg[igWpay]
     Whpesys = parg[igWMTO] * fuselage.HPE_sys.W
     Wlgnose = landing_gear.nose_gear.weight.W
@@ -197,7 +197,7 @@ function geometry(ac::aircraft; io = stdout)
             @printf(io, "fuel capacity    = %10.1f N (%10.1f lb)\n", strut.fuel_capacity, strut.fuel_capacity/lbf_to_N)
             @printf(io, "strut share of tank volume = %5.3f\n", strut.fuel_capacity/ac.parg[igWfmax])
         end
-        if ac.options.opt_wing_config == WingConfig.TrussBraced
+        if ac.options.has_jury
             jury = wing.jury
             @printf(io, "l_jury           = %6.2f m (%8.2f ft)\n", jury.length, jury.length/ft_to_m)
             @printf(io, "c_jury           = %6.2f m (%8.2f ft)\n", jury.chord, jury.chord/ft_to_m)

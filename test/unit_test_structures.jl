@@ -357,11 +357,17 @@ wing_braced = deepcopy(wing)
 wing_braced.strut.z = 154 * in_to_m
 wing_braced.strut.thickness_to_chord = 0.1 # the dumped strut has no box height
 TASOPT.wing_weights!(wing_cantilever, po, gammat, gammas, Nlift, Weng1, 0, 0.0, 0, 0.0, sigfac, rhofuel)
-TASOPT.wing_weights!(wing_braced, po, gammat, gammas, Nlift, Weng1, 0, 0.0, 0, 0.0, sigfac, rhofuel; has_strut = true)
+# A braced wing is sized by the envelope of its sizing load cases (the active pull-up case here)
+masses = TASOPT.wing_sizing_masses(; W_cruise = 5.0e5, W_MTO = 5.5e5, W_pay = 1.0e5, W_paymax = 1.5e5, W_fuel = 1.0e5,
+                                   freserve = 0.2, W_fuel_cap = 1.5e5, has_wing_fuel = true)
+envelope = TASOPT.evaluate_wing_sizing_cases!(wing_braced, masses, true, 1.0, 1.0, -2.0e4,
+                                              gammat, gammas, Weng1, 0.0; has_strut = true, neinn = 0)
+TASOPT.wing_weights!(wing_braced, po, gammat, gammas, Nlift, Weng1, 0, 0.0, 0, 0.0, sigfac, rhofuel;
+                     has_strut = true, section_loads_envelope = envelope)
 @test wing_cantilever.strut.cos_lambda == 1.0
 @test wing_braced.strut.cos_lambda < 1.0
 @test wing_braced.strut.weight > 0
-@test wing_braced.inboard.moment == wing_braced.outboard.moment
+@test wing_braced.inboard.moment == envelope.M_root
 
 # Engine at the span break ηs: root shear and moment should match
 # TASOPT 2.16 surfw.f (Drela eqs. 177-178 with R = N*We), i.e. moment arm (b/2)(ηs-ηo)

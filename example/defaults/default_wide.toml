@@ -62,6 +62,7 @@
     fuel_type       = "Jet-A" # Choices are "Jet-A", "LH2" and "CH4"
     fuel_in_wing    = true # Is fuel stored in wings?
     fuel_in_wingcen = true # Is fuel stored in wing center box?
+    fuel_in_strut = false # Is fuel stored in the strut box? Needs fuel in wing and a braced wing
     fuel_usability_factor = 0.90 # fraction of max fuel volume that is usable
 
     fuel_temp = 280.0
@@ -233,7 +234,6 @@
 [Wing.Strut]
     #Only used if `wing_config` is not "cantilever"
     z_fuselage_attach       = "154 in" # strut z position at the fuselage attachment
-    y_fuselage_attach       = "0.0 m" # strut y position at the fuselage attachment
     thickness_to_chord      = 0.15 # strut thickness to chord
     local_velocity_ratio    = 1.0 # V_strut/V_freestream
     box_width_to_chord      = 0.5 # strut box width to chord ratio

@@ -214,27 +214,27 @@ end
 
     @testset "Headline numbers" begin
         @test ac.options.opt_fuel == FuelType.JetA
-        @test ac.parg[igWMTO] ≈ 808084.2601082267 rtol=1e-4
-        @test ac.wing.weight ≈ 56149.28799844415 rtol=1e-4
-        @test ac.wing.strut.weight ≈ 18829.636591221522 rtol=1e-4
-        @test ac.parg[igWfuel] ≈ 226909.3715166272 rtol=1e-4
-        @test ac.parm[imPFEI] ≈ 0.894828024931875 rtol=1e-4
-        @test ac.para[iaCL, ipcruise1, 1] / ac.para[iaCD, ipcruise1, 1] ≈ 17.211351022629255 rtol=1e-4
+        @test ac.parg[igWMTO] ≈ 803939.6409766595 rtol=1e-4
+        @test ac.wing.weight ≈ 55027.82233848794 rtol=1e-4
+        @test ac.wing.strut.weight ≈ 17973.746658450294 rtol=1e-4
+        @test ac.parg[igWfuel] ≈ 226012.32597618716 rtol=1e-4
+        @test ac.parm[imPFEI] ≈ 0.8912904777392304 rtol=1e-4
+        @test ac.para[iaCL, ipcruise1, 1] / ac.para[iaCD, ipcruise1, 1] ≈ 17.18859242250325 rtol=1e-4
     end
 
     @testset "Strut" begin
-        @test ac.wing.strut.area ≈ 0.016407785450506876 rtol=1e-4
+        @test ac.wing.strut.area ≈ 0.01569901283579303 rtol=1e-4
         @test ac.wing.jury.eta_strut == 0.5
         @test ac.wing.strut.x_strut_attach ≈ 17.1123 rtol=1e-12
-        @test ac.wing.strut.axial_force ≈ 2.1296518136531916e6 rtol=1e-4
-        @test ac.fuselage.strut_attach.W ≈ 1129.7781954732914 rtol=1e-4
+        @test ac.wing.strut.axial_force ≈ 1.9649073178801532e6 rtol=1e-4
+        @test ac.fuselage.strut_attach.W ≈ 1078.4247995070177 rtol=1e-4
         test_strut_cases(ac; strut_criterion = :tension,
                          governing_root = :taxi, governing_break = :pullup,
                          governing_strut = :pullup, governing_strut_compression = :pushover,
                          infeasibilities = Set([:wing_fuel_volume_exceeded]))
     end
 
-    test_ac_off_design(ac, 1.0520149588587828, 148204.79902900502, 700688.6557206044)
+    test_ac_off_design(ac, 1.0479384475463052, 147630.51200512034, 696866.7951055926)
 end
 
 @testset "TBW LCH4 smoke" verbose=true begin

@@ -48,12 +48,13 @@ $TYPEDFIELDS
     trefftz_config::aerodynamics.TrefftzPlaneConfig
 end
 
-# `has_strut` is read-only, derived from `opt_wing_config`
+# `has_strut` and `has_jury` are read-only, derived from `opt_wing_config`
 function Base.getproperty(opt::Options, name::Symbol)
   name === :has_strut && return getfield(opt, :opt_wing_config) != WingConfig.Cantilever
+  name === :has_jury && return getfield(opt, :opt_wing_config) == WingConfig.TrussBraced
   return getfield(opt, name)
 end
-Base.propertynames(opt::Options, private::Bool=false) = (fieldnames(Options)..., :has_strut)
+Base.propertynames(opt::Options, private::Bool=false) = (fieldnames(Options)..., :has_strut, :has_jury)
 
 function Base.summary(opt::Options)
   println("\n-------- Options Summary --------")

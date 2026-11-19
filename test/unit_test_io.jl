@@ -169,4 +169,11 @@
         @test ac_legacy.wing.strut.caps.material.σmax == ac_def.wing.strut.caps.material.σmax
     end
 
+#E: unpack_ac_components returns the aircraft's engine, not the TASOPT.engine module
+    @testset "unpack_ac_components engine" begin
+        engine_unpacked = TASOPT.unpack_ac_components(ac_def)[8]
+        @test engine_unpacked isa TASOPT.Engine
+        @test engine_unpacked === ac_def.engine
+    end
+
 end #testset "io"
