@@ -2109,7 +2109,7 @@ function side_view(ac::aircraft;
         plot!(plot_obj, [xnose, xend], [z_ann, z_ann]; lw = 1.5, color = :black)
         scatter!(plot_obj, [xnose, xend], [z_ann, z_ann];
                  yerror = abs(z_ann)*0.07, markersize = 0)
-        annotate!(plot_obj, (xnose + xend)*0.5, z_ann*1.25,
+        annotate!(plot_obj, (xnose + xend)*0.5, z_ann*1.1,
                   text("ℓ = $(round(xend - xnose, digits=1)) m",
                        label_fs, :center, :top))
 
