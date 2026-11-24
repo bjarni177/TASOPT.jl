@@ -224,6 +224,10 @@ function analyze_TASOPT_tank(ac::aircraft, t_hold_orig::Float64 = 0.0, t_hold_de
         species = "CH4"
     elseif ac.options.opt_fuel == FuelType.LH2
         species = "H2"
+    elseif ac.options.opt_fuel == FuelType.C2H6
+        species = "C2H6"
+    elseif ac.options.opt_fuel == FuelType.C2H4
+        species = "C2H4"
     end
 
     ullage_frac = ac.fuse_tank.ullage_frac
@@ -257,7 +261,7 @@ function analyze_TASOPT_tank(ac::aircraft, t_hold_orig::Float64 = 0.0, t_hold_de
 
     dy_dt(y, p, t) = TankDerivatives(t, y, p[1], p[2]) #State derivatives
     #ODE problem; specify changes in mission segments for better speed
-    prob = ODEProblem(dy_dt, y0, tspan, ODEparams, tstops = para_alt[iatime,:], reltol = 1e-8)
+    prob = ODEProblem(dy_dt, y0, tspan, ODEparams, tstops = para_alt[iatime,:], reltol = 1e-4)
     sol = solve(prob, Tsit5())::ODESolution #Solve ODE problem using recommended solver
 
     #Extract solution vector

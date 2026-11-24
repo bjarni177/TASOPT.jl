@@ -9,12 +9,14 @@ using ..structures
 using ..TASOPT: fuselage_tank, aircraft
 using ..materials
 using NLsolve
+using ForwardDiff
 using Roots
 using NLopt
 using OrdinaryDiffEq
 using StaticArrays
 
 import ..TASOPT: __TASOPTindices__, __TASOPTroot__, compare_strings, FuelType
+import ..materials: MaterialProperties
 
 export SaturatedMixture, SaturatedPhaseProps, tanksize!,
        InnerTankGeometry, OuterTankGeometry
