@@ -262,6 +262,7 @@ function stickfig(ac::aircraft; plot_obj = nothing, label_fs = 16,
         aisle_halfwidth = fuselage.cabin.aisle_halfwidth
         front_seat_offset = fuselage.cabin.front_seat_offset
 
+        seats_per_row = structures.findSeatsAbreast(wcabin, seat_width, aisle_halfwidth)
         xseats = _deck_seat_rows(ac, xseats0; pax = pax)[1]
         rows = length(xseats)
 
@@ -357,28 +358,6 @@ function stickfig(ac::aircraft; plot_obj = nothing, label_fs = 16,
         yengine = [yi[i] - D/2, yi[i] + D/2, yi[i] + D/3, yi[i] - D/3, yi[i] - D/2]
         plot!(plot_obj, xengine, yengine, color = :red, linewidth = 1.5, label = "", z_order = :front)
     end
-
-    xi = zeros(length(yi))
-    ηi = yi / (b / 2)
-    ηo = bo / b
-    ci = zeros(length(yi))
-
-    for (i, η) in enumerate(ηi)
-        if η <= ηs
-            ci[i] = co * (1 + (λs - 1) * (η - ηo) / (ηs - ηo))
-        else
-            ci[i] = co * (λs + (λt - λs) * (η - ηs) / (1 - ηs))
-        end
-    end
-
-    tanL = tan(wing.layout.sweep*π/180.0)
-    @. xi = tanL * (yi - bo/2) - 0.4ci + wing.layout.box_x - 1.0
-    xlocations = vec(hcat([xi, xi, xi.+lnace, xi.+lnace, xi]...)) #hcat is to avoid this being an array of arrays
-    ylocations = vec(hcat([yi.-D/2, yi.+D/2, yi.+D/3, yi.-D/3, yi.-D/2]...))
-    
-    # Plot engine locations
-    plot!(plot_obj, xlocations, ylocations, color=:red, linewidth=1.5)
-    plot!(plot_obj, xlocations, -ylocations, color=:red, linewidth=1.5)
 
     # Plot NP and annotate
     scatter!(plot_obj, [parg[igxNP]], [0.0], color=:blue, marker=:circle, z_order=15, label="NP")

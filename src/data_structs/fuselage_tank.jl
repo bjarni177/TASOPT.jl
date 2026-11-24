@@ -104,4 +104,9 @@ $TYPEDFIELDS
     stiffener_material::StructuralAlloy = StructuralAlloy("Al-2219-T87")
     """Process knockdown on the composite acreage allowable (-); not for joints"""
     eta_composite::Float64 = 1.0
+
+    """Cache for warm-starting thermal solves: last converged tankWthermal solution (if any)"""
+    last_thermal_sol::Vector{Float64} = Float64[]
+    """Cache for warm-starting MLI thickness solve (Δt and thermal states)"""
+    last_MLI_sol::Vector{Float64} = Float64[]
 end

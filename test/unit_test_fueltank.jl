@@ -555,13 +555,13 @@ end
     @testset "wall_conductivity and wall_resistance" begin
         @test TASOPT.CryoTank.wall_conductivity(Al) == 121.0
         @test TASOPT.CryoTank.wall_conductivity(Al) == Al.k
-        @test TASOPT.CryoTank.wall_conductivity(cfrp0090) == 0.8
+        @test TASOPT.CryoTank.wall_conductivity(cfrp0090) == 0.94
         @test TASOPT.CryoTank.wall_conductivity(cfrp0090) == cfrp0090.k_tt
         # ASSUMPTION: a missing (k_tt = 0) CompositeLaminate conductivity falls back to Al-2219 (121 W/m/K)
         cfrp_nok = deepcopy(cfrp0090)
         cfrp_nok.k_tt = 0.0
         @test TASOPT.CryoTank.wall_conductivity(cfrp_nok) == 121.0
-        @test TASOPT.CryoTank.wall_resistance(cfrp0090, 0.01, 50.0) ≈ 0.01 / (0.8 * 50.0)
+        @test TASOPT.CryoTank.wall_resistance(cfrp0090, 0.01, 50.0) ≈ 0.01 / (0.94 * 50.0)
         @test TASOPT.CryoTank.wall_resistance(Al, 4.0e-3, 90.0) ≈ 4.0e-3 / (121.0 * 90.0)
     end
 
@@ -787,4 +787,318 @@ end
         h_coeff = TASOPT.CryoTank.tank_heat_coeff(T_w, ifuel, Tfuel, 5.0)
         @test isfinite(h_coeff) && h_coeff > 0
     end
+end
+
+@testset "Tank sizing lower bounds" begin
+    CT = TASOPT.CryoTank
+    mat = TASOPT.materials.StructuralAlloy("Al-2219-T87")
+    s_a = mat.UTS / 4
+    θ1, θ2 = 45 * pi / 180, 135 * pi / 180
+    perim = 2π * 1.86
+
+    @testset "stiffener_weight light load" begin
+        Ws = [CT.stiffener_weight("inner", W, 1.86, perim, s_a, mat.ρ, 1.0) for W in (0.0, 1e3, 5e3)]
+        @test all(isfinite, Ws)
+        @test all(>(0), Ws)
+        @test Ws[1] ≈ Ws[2] ≈ Ws[3] #Constant minimum beam below the threshold
+        @test CT.stiffener_weight("inner", 1e6, 1.86, perim, s_a, mat.ρ, 1.0) > Ws[1] #Monotonic in load
+        @test CT.stiffener_weight("outer", 0.0, 1.86, perim, s_a, mat.ρ, θ1, θ2, 3.0, 1.0, mat.E) > 0
+    end
+
+    @testset "outer_cylinder_thickness_ratio" begin
+        pc = 4 * TASOPT.pref
+        ν = mat.ν
+        E = mat.E
+        prev = 0.0
+        for L_Do in (1e-3, 1e-2, 0.1, 0.5, 1.0)
+            t_Do = CT.outer_cylinder_thickness_ratio(E, ν, L_Do, pc)
+            @test 0 < t_Do < (L_Do / 0.45)^2
+            res = 2.42 * E * t_Do^(5/2) / ((1 - ν^2)^(3/4) * (L_Do - 0.45 * sqrt(t_Do))) - pc
+            @test abs(res) < 1e-3 * pc
+            @test t_Do > prev #Monotonic in L/D
+            prev = t_Do
+        end
+        @test_throws DomainError CT.outer_cylinder_thickness_ratio(E, ν, 0.0, pc)
+        @test_throws DomainError CT.outer_cylinder_thickness_ratio(E, ν, -1.0, pc)
+    end
+
+    @testset "insulation thickness checks" begin
+        @test CT.check_insulation_thickness([0.0, 0.1]) === nothing
+        @test_throws DomainError CT.check_insulation_thickness([0.1, -1e-3])
+        @test_throws DomainError CT.check_insulation_thickness([0.1, NaN])
+        t = [-0.1, 0.05, 0.0]
+        @test_logs (:warn,) CT.clamp_insulation_thickness!(t)
+        @test t == [CT.T_INSUL_MIN, 0.05, CT.T_INSUL_MIN]
+    end
+
+    @testset "residuals_Q: non-positive temperature with a vacuum layer" begin
+        #A Newton step can propose a non-positive interface temperature, for which the vacuum resistance has no real value. 
+        #The residual must then return the large-residual sentinel instead of throwing (throwing is ~100x slower).
+        #Uses the shared fixture; the fields that are changed are restored afterwards
+        ft, fs = fuse_tank, fuse
+        saved = (ft.material_insul, ft.t_insul, ft.sizes_insulation, ft.iinsuldes)
+        ft.material_insul = [ThermalInsulator("vacuum"), ThermalInsulator("polyurethane32")]
+        ft.t_insul = [0.02, 0.05]
+        ft.iinsuldes = [1, 2]
+        ft.sizes_insulation = false
+        inner = CT.size_inner_tank(fs, ft, ft.t_insul)
+        p = CT.thermal_params{typeof(fs.layout.cross_section), Float64}()
+        p.l_cyl = inner.l_cyl; p.l_tank = inner.l_tank; p.r_tank = inner.Rtank_outer; p.Shead = inner.Shead_insul
+        p.t_cond = ft.t_insul; p.material = ft.material_insul; p.Tfuel = ft.Tfuel
+        p.z = 11e3; p.TSL = TSL; p.Mair = 0.8; p.xftank = 15.0; p.ifuel = ifuel; p.fuse_cs = fs.layout.cross_section
+
+        x_bad = [5000.0, 21.0, -10.0, 250.0] #Q, T_wall, T_ins (vacuum outer face < 0), T_fuselage
+        @test (@test_nowarn CT.residuals_Q(x_bad, p, "Q_unknown")) == fill(1e3, 4)
+        x_zero = [5000.0, 21.0, 0.0, 250.0] #Boundary: exactly 0 K is also not a valid vacuum-side temperature
+        @test CT.residuals_Q(x_zero, p, "Q_unknown") == fill(1e3, 4)
+        p.Q = 1000.0
+        @test CT.residuals_Q([21.0, -10.0, 250.0], p, "Q_known") == fill(1e3, 4) #Q_known mode has one more residual than states
+        x_ok = [500.0, 21.0, 100.0, 250.0]
+        r = CT.residuals_Q(x_ok, p, "Q_unknown")
+        @test all(isfinite, r) && !all(==(1e3), r)
+
+        ft.material_insul, ft.t_insul, ft.sizes_insulation, ft.iinsuldes = saved
+    end
+end
+
+@testset "Continuous tank sizing" begin
+    CT = TASOPT.CryoTank
+    fuse_tank.t_insul = [0.065]
+    fuse_tank.material_insul = [ThermalInsulator("vacuum")]
+    fuse_tank.sizes_insulation = false
+    Rmax = fuse.layout.radius - sum(fuse_tank.t_insul) - fuse_tank.clearance_fuse
+    Wf_orig = fuse_tank.Wfuelintank
+
+    #Sweep the fuel weight over the sphere, morphing and cylinder regimes
+    Wfs = 10 .^ range(1, 6, length = 400) .* gee
+    geoms = map(Wfs) do Wf
+        fuse_tank.Wfuelintank = Wf
+        CT.size_inner_tank(fuse, fuse_tank, fuse_tank.t_insul)
+    end
+    fuse_tank.Wfuelintank = Wf_orig
+
+    R  = [g.Rtank_outer for g in geoms]
+    L  = [g.l_cyl for g in geoms]
+    AR = [g.AR_head for g in geoms]
+    Wt = [g.Wtank for g in geoms]
+    lt = [g.l_tank for g in geoms]
+
+    @test all(L .>= 0)
+    @test all(1 .<= AR .<= fuse_tank.ARtank + 1e-12)
+    @test all(R .<= Rmax + 1e-12)
+    @test R[1] < Rmax && R[end] ≈ Rmax #Starts as a small sphere and ends at the maximum radius
+    @test L[1] == 0.0 && AR[1] == 1.0 #Spherical at low volume
+    @test AR[end] ≈ fuse_tank.ARtank && L[end] > 0 #Design heads plus cylinder at high volume
+
+    #Monotonic growth and no jumps (largest relative step between consecutive points is small)
+    for v in (R, Wt, lt)
+        @test issorted(v)
+        @test maximum(diff(v) ./ v[1:end-1]) < 0.1 #Fuel weight steps are about 3 % apart
+    end
+    @test issorted(L) && issorted(AR)
+    @test maximum(abs.(diff(AR))) < 0.1
+    @test maximum(diff(L)[L[1:end-1] .> 0]) < 0.2 * maximum(L) 
+
+    #Weights reproduce the original (cylinder-regime) results where the old model applied
+    fuse_tank.Wfuelintank = Wf_orig
+    g = CT.size_inner_tank(fuse, fuse_tank, fuse_tank.t_insul)
+    @test g.AR_head == fuse_tank.ARtank
+    @test g.Rtank_outer ≈ Rmax
+
+    #Full tank sizing with an outer vessel stays finite and continuous across regimes
+    fuse_tank.sizes_insulation = false
+    Wfuels = 10 .^ range(3, 5.6, length = 300) #about 2 % apart
+    Wtanks = Float64[]
+    for Wfuel in Wfuels
+        ac.parg[igWfuel] = Wfuel
+        TASOPT.tanksize!(ac, 1)
+        @test isfinite(ac.parg[igWftank]) && ac.parg[igWftank] > 0
+        @test isfinite(ac.parg[iglftank]) && ac.parg[iglftank] > 0
+        push!(Wtanks, ac.parg[igWftank])
+    end
+    @test issorted(Wtanks)
+    @test maximum(diff(Wtanks) ./ Wtanks[1:end-1]) < 0.1 #No jumps in tank weight between regimes
+    ac.parg[igWfuel] = 1e5
+end
+
+
+@testset "Unreachable boil-off target" begin
+    CT = TASOPT.CryoTank
+    #Single vacuum layer: its heat leak is limited, so a very high boil-off target is unreachable
+    fuse_tank.material_insul = [ThermalInsulator("vacuum")]
+    fuse_tank.t_insul = [0.065]
+    fuse_tank.iinsuldes = [1]
+    fuse_tank.sizes_insulation = true
+    fuse_tank.last_MLI_sol = Float64[]
+    fuse_tank.last_thermal_sol = Float64[]
+    ac.parg[igWfuel] = 1e5
+
+    zc = ac.para[iaalt, ipcruise1, 1]
+    Mc = ac.para[iaMach, ipcruise1, 1]
+
+    #Highest attainable heat rate is consistent with the full thermal model for the same stack
+    fuse_tank.boiloff_rate = 1e3
+    fuse_tank.sizes_insulation = false
+    TASOPT.tanksize!(ac, 1) #Stores the tank geometry and position used by tankWthermal
+    xc = ac.parg[igxftank]
+    Q_max = CT.max_heat_rate(fuse, fuse_tank, 0.0, zc, TSL, Mc, xc, ifuel)
+    @test isfinite(Q_max) && Q_max > 0
+    @test CT.tankWthermal(fuse, fuse_tank, zc, TSL, Mc, xc, ifuel) ≈ fuse_tank.qfac * Q_max rtol = 1e-3
+
+    #Unreachable target: no error, warns, and stack is physical
+    fuse_tank.t_insul = [0.065]
+    fuse_tank.sizes_insulation = true
+    fuse_tank.boiloff_rate = 1e3 #%/h
+    @test CT.boiloff_heat_rate(fuse_tank) > fuse_tank.qfac * Q_max
+    @test_logs (:warn, r"cannot be reached") match_mode = :any TASOPT.tanksize!(ac, 1)
+    @test all(fuse_tank.t_insul .>= CT.T_INSUL_MIN)
+    @test fuse_tank.t_insul[1] ≈ CT.T_INSUL_MIN
+    @test isfinite(ac.parg[igWftank]) && ac.parg[igWftank] > 0
+
+    #Reachable target: normal solve (no warning about reachability), thickness above the minimum
+    fuse_tank.t_insul = [0.065]
+    fuse_tank.material_insul = [ThermalInsulator("rohacell41s"), ThermalInsulator("rohacell41s"), ThermalInsulator("polyurethane27")]
+    fuse_tank.t_insul = [0.15, 0.15, 0.15]
+    fuse_tank.iinsuldes = [1, 2, 3]
+    fuse_tank.boiloff_rate = 0.15
+    fuse_tank.last_MLI_sol = Float64[]
+    fuse_tank.last_thermal_sol = Float64[]
+    TASOPT.tanksize!(ac, 1)
+    @test all(fuse_tank.t_insul .> 10 * CT.T_INSUL_MIN)
+end
+
+@testset "Thermal solve robustness" begin
+    CT = TASOPT.CryoTank
+    ft = fuse_tank
+    zc = ac.para[iaalt, ipcruise1, 1]
+    Mc = ac.para[iaMach, ipcruise1, 1]
+    ac.parg[igWfuel] = 1e5
+
+    function setup_stack!(materials, t)
+        ft.material_insul = ThermalInsulator.(materials)
+        ft.t_insul = copy(t)
+        ft.iinsuldes = collect(1:length(t))
+        ft.sizes_insulation = false
+        ft.last_MLI_sol = Float64[]
+        ft.last_thermal_sol = Float64[]
+        TASOPT.tanksize!(ac, 1) #Stores the tank geometry and position used by the thermal model
+        return ac.parg[igxftank]
+    end
+
+    @testset "max_heat_rate: thinnest admissible non-vacuum stack" begin
+        #The feasibility pre-check evaluates the stack reduced to T_INSUL_MIN, whose resistance is orders of magnitude below that of the
+        #design stack. The solve must still find the physical root (the pre-check returning NaN silently disables it).
+        xc = setup_stack!(["polyurethane32", "polyurethane32", "polyurethane32"], [0.15, 0.15, 0.15])
+        Δt_min = CT.min_insulation_shift(ft.t_insul, ft.iinsuldes)
+        @test Δt_min ≈ CT.T_INSUL_MIN - 0.15
+        Q_thin = CT.max_heat_rate(fuse, ft, Δt_min, zc, TSL, Mc, xc, ifuel)
+        Q_full = CT.max_heat_rate(fuse, ft, 0.0, zc, TSL, Mc, xc, ifuel)
+        @test isfinite(Q_thin) && isfinite(Q_full)
+        @test Q_thin > 10 * Q_full > 0 #Much thinner insulation leaks much more
+    end
+
+    @testset "tankWthermal: non-physical warm start is not accepted" begin
+        #With a vacuum layer the thermal network has non-physical stagnation points (Q ~ 0 and a wall below the fuel temperature).
+        #A stale warm start there must not be returned as a solution, or stored for the next call.
+        xc = setup_stack!(["vacuum", "polyurethane32", "polyurethane32"], [0.02, 0.1, 0.1])
+        Q_ref = CT.tankWthermal(fuse, ft, zc, TSL, Mc, xc, ifuel)
+        @test isfinite(Q_ref) && Q_ref > 0
+
+        _, _, Taw = CT.freestream_heat_coeff(zc, TSL, Mc, xc)
+        ft.last_thermal_sol = [3731.0, 11.9, 1e-19, 152.0, 240.0] #Non-physical stagnation point (wall below the fuel temperature), as seen in practice
+        Q_poisoned = CT.tankWthermal(fuse, ft, zc, TSL, Mc, xc, ifuel)
+        @test Q_poisoned ≈ Q_ref rtol = 1e-3
+        @test ft.last_thermal_sol[1] > 1.0 #Cached state is a true root, not the stagnation point
+        @test all(T -> ft.Tfuel - 1e-3 <= T <= Taw + 1e-3, ft.last_thermal_sol[2:end])
+    end
+end
+@testset "AD and warm starts with composite walls and wall resistance" begin
+    CT = TASOPT.CryoTank
+    ForwardDiff = TASOPT.ForwardDiff
+    CompositeLaminate = TASOPT.materials.CompositeLaminate
+    cfrp0090 = CompositeLaminate("CFRP-IM7-8552-PW-0090")
+    cfrpVDA  = CompositeLaminate("CFRP-IM7-8552-PW-0090-VDA")
+    ac_t = deepcopy(ac) #Work on a copy so the shared fixtures are untouched
+    ft, fs = ac_t.fuse_tank, ac_t.fuselage
+    ac_t.parg[igWfuel] = 1e5
+    zc = ac_t.para[iaalt, ipcruise1, 1]
+    Mc = ac_t.para[iaMach, ipcruise1, 1]
+    CT.MLI_AUTODIFF[] = true
+    CT.THERMAL_AUTODIFF[] = true
+
+    #Sizes the tank (stores geometry and wall thicknesses) for the given walls and insulation stack
+    function size_tank!(inner, outer, materials, t; sizes = false)
+        ft.inner_material, ft.outer_material = inner, outer
+        ft.material_insul = ThermalInsulator.(materials)
+        ft.t_insul = copy(t)
+        ft.iinsuldes = collect(1:length(t))
+        ft.sizes_insulation = sizes
+        ft.last_MLI_sol = Float64[]
+        ft.last_thermal_sol = Float64[]
+        TASOPT.tanksize!(ac_t, 1)
+        return ac_t.parg[igxftank]
+    end
+    #Central finite-difference Jacobian
+    fd_jacobian(f, x) = reduce(hcat, map(eachindex(x)) do i
+        h = 1e-6 * max(1.0, abs(x[i]))
+        xp, xm = copy(x), copy(x)
+        xp[i] += h
+        xm[i] -= h
+        (f(xp) - f(xm)) / 2h
+    end)
+
+    @testset "res_MLI_thick Jacobian matches finite differences" begin
+        for (label, inner) in (("alloy", StructuralAlloy("Al-2219-T87")), ("composite", cfrp0090))
+            xc = size_tank!(inner, StructuralAlloy("Al-2219-T87"), ["rohacell41s", "polyurethane27"], [0.1, 0.1])
+            @test ft.t_wall_inner > 0
+            CT.tankWthermal(fs, ft, zc, TSL, Mc, xc, ifuel)
+            x = [0.0; ft.last_thermal_sol[2:end]] #Δt = 0 and the converged temperatures
+            res(x) = CT.res_MLI_thick(x, fs, ft, zc, TSL, Mc, xc, ifuel)
+            @test ForwardDiff.jacobian(res, x) ≈ fd_jacobian(res, x) rtol = 1e-4
+        end
+    end
+
+    @testset "residuals_Q Jacobian with a composite outer wall and vacuum layer" begin
+        xc = size_tank!(cfrp0090, cfrpVDA, ["vacuum", "polyurethane32", "polyurethane32"], [0.02, 0.1, 0.1])
+        @test ft.t_wall_inner > 0 && ft.t_wall_outer > 0
+        CT.tankWthermal(fs, ft, zc, TSL, Mc, xc, ifuel)
+        p = CT.thermal_params{typeof(fs.layout.cross_section), Float64}()
+        p.l_cyl = ft.l_cyl_inner; p.l_tank = ft.l_inner; p.r_tank = ft.Rinnertank; p.Shead = ft.Shead_insul
+        p.t_cond = ft.t_insul; p.material = ft.material_insul; p.Tfuel = ft.Tfuel
+        p.z = zc; p.TSL = TSL; p.Mair = Mc; p.xftank = xc; p.ifuel = ifuel; p.fuse_cs = fs.layout.cross_section
+        p.inner_material = ft.inner_material; p.outer_material = ft.outer_material
+        p.t_wall_inner = ft.t_wall_inner; p.t_wall_outer = ft.t_wall_outer
+        res(x) = CT.residuals_Q(x, p, "Q_unknown")
+        x = copy(ft.last_thermal_sol)
+        @test ForwardDiff.jacobian(res, x) ≈ fd_jacobian(res, x) rtol = 1e-4
+    end
+
+    @testset "tanksize! with a composite inner wall sizes the insulation with AD" begin
+        size_tank!(cfrp0090, StructuralAlloy("Al-2219-T87"), ["rohacell41s", "rohacell41s", "polyurethane27"], [0.15, 0.15, 0.15]; sizes = true)
+        TASOPT.tanksize!(ac_t, 1) #Second pass: the wall thickness used by the insulation residual is now the sized one
+        @test CT.MLI_AUTODIFF[] && CT.THERMAL_AUTODIFF[] #Neither solver fell back to finite differences
+        xc = ac_t.parg[igxftank]
+        @test CT.tankWthermal(fs, ft, zc, TSL, Mc, xc, ifuel) ≈ ft.qfac * CT.boiloff_heat_rate(ft) rtol = 1e-3
+    end
+
+    @testset "tankWthermal warm start with wall resistance" begin
+        xc = size_tank!(cfrp0090, cfrpVDA, ["vacuum", "polyurethane32", "polyurethane32"], [0.02, 0.1, 0.1])
+        Q_cold = CT.tankWthermal(fs, ft, zc, TSL, Mc, xc, ifuel)
+        @test length(ft.last_thermal_sol) == length(ft.t_insul) + 2
+        Q_warm = CT.tankWthermal(fs, ft, zc, TSL, Mc, xc, ifuel)
+        @test Q_warm ≈ Q_cold rtol = 1e-3
+        @test CT.THERMAL_AUTODIFF[]
+    end
+
+    @testset "composite sphere regime: AR_head = 1 and head thickness" begin
+        ft.inner_material = cfrp0090
+        ft.Wfuelintank = 100 * gee #Small enough to be a sphere
+        inner = CT.size_inner_tank(fs, ft, ft.t_insul)
+        @test inner.AR_head == 1.0
+        @test inner.l_cyl == 0.0
+        @test inner.wall_diag.t_head ≈ CT.composite_inner_wall(cfrp0090, ft, inner.Rtank_outer; AR_head = 1.0).t_head
+    end
+
+    CT.MLI_AUTODIFF[] = true
+    CT.THERMAL_AUTODIFF[] = true
 end
