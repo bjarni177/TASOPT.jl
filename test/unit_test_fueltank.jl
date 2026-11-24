@@ -134,9 +134,16 @@ fuse.layout.cross_section.bubble_lower_downward_shift = 0.3
     @testset "Stringer sizing" begin
         θ = 85 * pi /180
         outputs_bendM = TASOPT.CryoTank.stiffeners_bendingM(θ)
-        outputs_bendM_check = [1.1749999999999998, 0.09494892091249901]
+        outputs_bendM_check = [1.1706194490192345, 0.09494621752961424]
         for i in 1:length(outputs_bendM)
             @test outputs_bendM[i] ≈ outputs_bendM_check[i]
+        end
+
+        #Barron (1985) Eq. (7.5) typo guard: the corrected k_max matches an independent exact
+        #(Castigliano) ring solution at support angles where the printed Eq. (7.5) is badly off
+        for (θdeg, kexact) in [(30.0, 0.46833), (45.0, 0.30833), (60.0, 0.21810)]
+            _, kmax = TASOPT.CryoTank.stiffeners_bendingM(θdeg * pi / 180)
+            @test kmax ≈ kexact rtol = 1e-4
         end
 
         θ1 = 45 * pi /180
